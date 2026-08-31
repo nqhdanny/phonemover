@@ -123,7 +123,8 @@ class MainWindow(QMainWindow):
         self.dest_group = box
         v = QVBoxLayout(box)
 
-        v.addWidget(QLabel(t('dest.folder'), box))
+        self.dest_folder_label = QLabel(t('dest.folder'), box)
+        v.addWidget(self.dest_folder_label)
         row = QHBoxLayout()
         self.dest_edit = QLineEdit(box)
         self.dest_edit.setPlaceholderText(r'D:\PhoneMover\out')
@@ -169,6 +170,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(t('progress.waiting'))
         for dt, cb in self._type_checks.items():
             cb.setText(t(_TYPE_KEY[dt]))
+        self.dest_folder_label.setText(t('dest.folder'))
         # group box titles
         self.data_group.setTitle(t('data.title'))
         self.dest_group.setTitle(t('dest.title'))
