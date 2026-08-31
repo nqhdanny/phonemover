@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -148,6 +149,13 @@ class MainWindow(QMainWindow):
 
         self.status_label = QLabel(t('progress.waiting'), self)
         layout.addWidget(self.status_label)
+
+        # log area: per-type success/failure detail
+        self.log_edit = QTextEdit(self)
+        self.log_edit.setReadOnly(True)
+        self.log_edit.setMaximumHeight(120)
+        self.log_edit.setPlaceholderText("""transferred.""")
+        layout.addWidget(self.log_edit)
 
         row = QHBoxLayout()
         self.start_btn = QPushButton(t('action.start'), self)
@@ -271,6 +279,17 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress.setValue(100)
+
+        # write per-type detail to the log
+        lines = []
+        for tr in getattr(result, "types", []):
+            mark = 'OK ' if tr.ok else 'FAIL'
+            detail = tr.message or (f'{tr.count} item(s)' if tr.ok else 'no detail')
+            lines.append(f"[{mark}] {tr.data_type.value}: {detail}")
+        if hasattr(result, 'backup') and result.backup and getattr(result.backup, 'backup_root', None):
+            lines.append(f"backup: {result.backup.backup_root}")
+        self.log_edit.setPlainText("\n".join(lines))
+
         if result.ok:
             self.status_label.setText(t('progress.done'))
         else:
