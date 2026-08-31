@@ -7,11 +7,12 @@ An iOS backup produced by pymobiledevice3/iTunes has:
 
 from .calendar import calendar_to_ics, write_ics
 from .contacts import contacts_to_vcard
-from .photos import extract_photos
+from .photos import extract_photos, extract_videos
 
 __all__ = [
     "calendar_to_ics",
     "write_ics",
     "contacts_to_vcard",
     "extract_photos",
+    "extract_videos",
 ]

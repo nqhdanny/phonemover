@@ -16,8 +16,8 @@ def make_backup(path: Path) -> Path:
     )
     rows = [
         ("abc123", "HomeDomain", "Library/AddressBook/AddressBook.sqlitedb"),
-        ("def456", "Media/DCIM", "100APPLE/IMG_0001.HEIC"),
-        ("ghi789", "Media/DCIM", "100APPLE/IMG_0002.JPG"),
+        ("def456", "CameraRollDomain", "100APPLE/IMG_0001.HEIC"),
+        ("ghi789", "CameraRollDomain", "100APPLE/IMG_0002.JPG"),
         ("jkl012", "HomeDomain", "Library/Calendar/Calendar.sqlitedb"),
     ]
     for i, (fid, dom, rel) in enumerate(rows):
@@ -39,9 +39,9 @@ class TestManifest(unittest.TestCase):
     def test_find_by_domain(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = make_backup(Path(tmp))
-            media = find_by_domain(root, "Media/DCIM")
+            media = find_by_domain(root, "CameraRollDomain")
             self.assertEqual(len(media), 2)
-            self.assertTrue(all(e.domain.startswith("Media/DCIM") for e in media))
+            self.assertTrue(all(e.domain.startswith("CameraRollDomain") for e in media))
 
     def test_find_by_path(self):
         with tempfile.TemporaryDirectory() as tmp:

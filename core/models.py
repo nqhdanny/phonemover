@@ -47,11 +47,11 @@ DATA_TYPES: dict[DataType, DataTypeInfo] = {
     ),
     DataType.PHOTOS: DataTypeInfo(
         DataType.PHOTOS, "datatype.photos", "P0", True, "mtp",
-        "Media/DCIM",
+        "CameraRollDomain",
     ),
     DataType.VIDEOS: DataTypeInfo(
         DataType.VIDEOS, "datatype.videos", "P0", True, "mtp",
-        "Media/DCIM",
+        "CameraRollDomain",
     ),
     DataType.MUSIC: DataTypeInfo(
         DataType.MUSIC, "datatype.music", "P0", True, "mtp",

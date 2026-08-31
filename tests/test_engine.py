@@ -31,8 +31,9 @@ def make_backup(root: Path) -> Path:
     conn.execute("INSERT INTO CalendarItem VALUES (1, 'Sync', NULL, 0, 3600, 0, NULL, NULL)")
     conn.commit(); conn.close()
 
-    # Media file (blob: 'MEDIA1')
-    (root / "MEDIA1").write_bytes(b"\xff\xd8\xff\xe0fakejpeg")
+    # Media files (blobs: 'MEDIA1' photo, 'MEDIA2' video)
+    (root / "MEDIA1").write_bytes(b"fakejpeg")
+    (root / "MEDIA2").write_bytes(b"fakevideo")
 
     # Manifest.db
     mdb = root / "Manifest.db"
@@ -40,7 +41,8 @@ def make_backup(root: Path) -> Path:
     conn.execute("CREATE TABLE Files (fileID TEXT, domain TEXT, relativePath TEXT, flags INTEGER, file BLOB)")
     conn.execute("INSERT INTO Files VALUES ('ABDB', 'HomeDomain', 'Library/AddressBook/AddressBook.sqlitedb', 1, NULL)")
     conn.execute("INSERT INTO Files VALUES ('CALDB', 'HomeDomain', 'Library/Calendar/Calendar.sqlitedb', 1, NULL)")
-    conn.execute("INSERT INTO Files VALUES ('MEDIA1', 'Media/DCIM', '100APPLE/IMG_0001.JPG', 2, NULL)")
+    conn.execute("INSERT INTO Files VALUES ('MEDIA1', 'CameraRollDomain', '100APPLE/IMG_0001.JPG', 2, NULL)")
+    conn.execute("INSERT INTO Files VALUES ('MEDIA2', 'CameraRollDomain', '100APPLE/IMG_0002.MOV', 2, NULL)")
     conn.commit(); conn.close()
     return root
 
@@ -65,7 +67,21 @@ class TestEngine(unittest.TestCase):
             result = engine.run([DataType.PHOTOS])
             self.assertTrue(result.ok)
             photos = list((dest / "media" / "photos").glob("*"))
+            # only the .JPG photo, not the .MOV video
             self.assertEqual(len(photos), 1)
+            self.assertTrue(photos[0].name.endswith(".JPG"))
+
+    def test_migrate_videos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backup = make_backup(Path(tmp) / "backup")
+            dest = Path(tmp) / "out"
+            engine = MigrationEngine(backup, dest)
+            result = engine.run([DataType.VIDEOS])
+            self.assertTrue(result.ok)
+            videos = list((dest / "media" / "videos").glob("*"))
+            # only the .MOV video, not the .JPG photo
+            self.assertEqual(len(videos), 1)
+            self.assertTrue(videos[0].name.endswith(".MOV"))
 
     def test_missing_type_reports_error(self):
         with tempfile.TemporaryDirectory() as tmp:

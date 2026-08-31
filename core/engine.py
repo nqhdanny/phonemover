@@ -19,7 +19,7 @@ from core.manifest import find_by_path
 from core.models import DATA_TYPES, DataType
 from core.parse.calendar import write_ics
 from core.parse.contacts import write_vcards
-from core.parse.photos import extract_photos
+from core.parse.photos import extract_photos, extract_videos
 from core.write.mtp import copy_media_tree
 
 ProgressCB = Callable[[int, str, str], None]  # (percent 0-100, stage, message)
@@ -89,7 +89,9 @@ class MigrationEngine:
             return TypeResult(DataType.CONTACTS, False, 0, "AddressBook.sqlitedb not found in backup")
         out = self.dest_root / "apk_assets" / "contacts.vcf"
         n = write_vcards(db, out)
-        return TypeResult(DataType.CONTACTS, True, n, "", out)
+        ok = n > 0
+        msg = "" if ok else "no contacts found in AddressBook"
+        return TypeResult(DataType.CONTACTS, ok, n, msg, out)
 
     def _migrate_calendar(self) -> TypeResult:
         db = self._resolve_db(DataType.CALENDAR)
@@ -97,25 +99,32 @@ class MigrationEngine:
             return TypeResult(DataType.CALENDAR, False, 0, "Calendar.sqlitedb not found in backup")
         out = self.dest_root / "apk_assets" / "calendar.ics"
         n = write_ics(db, out)
-        return TypeResult(DataType.CALENDAR, True, n, "", out)
+        ok = n > 0
+        msg = "" if ok else "no events found in Calendar"
+        return TypeResult(DataType.CALENDAR, ok, n, msg, out)
 
     def _migrate_photos(self) -> TypeResult:
         out = self.dest_root / "media" / "photos"
         n = extract_photos(self.backup_root, out, convert_heic=True)
-        return TypeResult(DataType.PHOTOS, True, n, "", out)
+        ok = n > 0
+        msg = "" if ok else "no photos found under CameraRollDomain"
+        return TypeResult(DataType.PHOTOS, ok, n, msg, out)
 
     def _migrate_videos(self) -> TypeResult:
         out = self.dest_root / "media" / "videos"
-        # Videos share DCIM; extract_photos copies all DCIM media. For v1 we
-        # reuse it and note that video/photo split is refined in the MTP step.
-        n = extract_photos(self.backup_root, out, convert_heic=False)
-        return TypeResult(DataType.VIDEOS, True, n, "", out)
+        # Photos and videos both live under CameraRollDomain; split by suffix.
+        n = extract_videos(self.backup_root, out)
+        ok = n > 0
+        msg = "" if ok else "no videos found under CameraRollDomain"
+        return TypeResult(DataType.VIDEOS, ok, n, msg, out)
 
     def _migrate_music(self) -> TypeResult:
         out = self.dest_root / "media" / "music"
         # Music files live under Media/iTunes_Control/Music in Manifest.
         n = self._copy_domain("Media/iTunes_Control/Music", out)
-        return TypeResult(DataType.MUSIC, True, n, "", out)
+        ok = n > 0
+        msg = "" if ok else "no music found under Media/iTunes_Control/Music"
+        return TypeResult(DataType.MUSIC, ok, n, msg, out)
 
     def _copy_domain(self, domain: str, dest_dir: Path) -> int:
         from core.manifest import find_by_domain
