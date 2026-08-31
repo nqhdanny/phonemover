@@ -6,6 +6,7 @@ venv/
 *.egg-info/
 dist/
 build/
+*.spec
 
 # IDE
 .idea/
@@ -22,8 +23,8 @@ backups/
 data/
 
 # Android
-android/.gradle/
-android/build/
-android/app/build/
-android/local.properties
+apk/.gradle/
+apk/build/
+apk/app/build/
+apk/local.properties
 *.apk
