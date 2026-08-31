@@ -1,13 +1,12 @@
-"""Background worker — run migration off the UI thread."""
+"""Background worker — run migration / device scan off the UI thread."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
 
-from core.engine import MigrationEngine, MigrationResult
+from core.engine import MigrationEngine
 from core.models import DataType
 
 
@@ -44,3 +43,25 @@ class MigrationWorker(QThread):
 
     def _on_progress(self, percent: int, stage: str, message: str) -> None:
         self.progress.emit(percent, message or stage)
+
+
+class DeviceScanWorker(QThread):
+    """Enumerate connected iPhones off the UI thread."""
+
+    found = Signal(object)      # list[IDevice]
+    empty = Signal()            # no devices
+    error = Signal(str)         # environmental error (driver/usbmuxd)
+
+    def run(self) -> None:  # noqa: D102 - QThread entry point
+        try:
+            from core.device import DeviceError, list_iphones
+
+            devices = list_iphones()
+            if devices:
+                self.found.emit(devices)
+            else:
+                self.empty.emit()
+        except DeviceError as exc:
+            self.error.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))

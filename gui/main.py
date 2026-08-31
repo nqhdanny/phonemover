@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from core.models import DATA_TYPES, DataType, v1_data_types
 from i18n import LANGUAGES, set_language, t
 
-from .worker import MigrationWorker
+from .worker import DeviceScanWorker, MigrationWorker
 
 # Data type -> i18n key
 _TYPE_KEY = {
@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._worker: MigrationWorker | None = None
+        self._scan_worker: DeviceScanWorker | None = None
         self._type_checks: dict[DataType, QCheckBox] = {}
         self._build_ui()
         self.setWindowTitle(t('app.title'))
@@ -183,8 +184,32 @@ class MainWindow(QMainWindow):
     # -- slots -------------------------------------------------------------
 
     def _on_refresh(self) -> None:
-        # Placeholder: real device detection hooks into core.device later.
+        # Kick off device detection in the background.
+        self.device_label.setText(t('device.scanning'))
+        self.refresh_btn.setEnabled(False)
+        self._scan_worker = DeviceScanWorker(self)
+        self._scan_worker.found.connect(self._on_scan_found)
+        self._scan_worker.empty.connect(self._on_scan_empty)
+        self._scan_worker.error.connect(self._on_scan_error)
+        self._scan_worker.finished.connect(self._on_scan_done)
+        self._scan_worker.start()
+
+    def _on_scan_found(self, devices) -> None:
+        udids = ', '.join(d.udid for d in devices if d.udid)
+        self.device_label.setText(t('device.found') + (f' ({udids})' if udids else ''))
+        self.device_label.setStyleSheet('color: #2e7d32;')
+
+    def _on_scan_empty(self) -> None:
         self.device_label.setText(t('device.not_found'))
+        self.device_label.setStyleSheet('color: #c62828;')
+
+    def _on_scan_error(self, message: str) -> None:
+        self.device_label.setText(t('device.not_found') + ': ' + message)
+        self.device_label.setStyleSheet('color: #c62828;')
+
+    def _on_scan_done(self) -> None:
+        self.refresh_btn.setEnabled(True)
+        self._scan_worker = None
 
     def _on_browse(self) -> None:
         path = QFileDialog.getExistingDirectory(self, t('dest.folder'))

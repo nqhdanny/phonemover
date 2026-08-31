@@ -1,8 +1,9 @@
 """Device detection via pymobiledevice3 (async usbmux API).
 
 Note: pymobiledevice3 >= 2.x exposes an asyncio API. On Linux, the usbmuxd
-service must be running (socket at /var/run/usbmuxd). On Windows the transport
-differs but this wrapper stays the same.
+service must be running (socket at /var/run/usbmuxd). On Windows the library
+uses its own usbmux transport but still requires Apple's USB driver
+(Apple Mobile Device Support) to expose the device to the OS.
 """
 
 from __future__ import annotations
@@ -19,6 +20,10 @@ class IDevice:
     connection: str  # "usb" | "network"
 
 
+class DeviceError(RuntimeError):
+    """Raised when enumeration fails for a reason worth surfacing to the UI."""
+
+
 async def _list_async() -> list[IDevice]:
     from pymobiledevice3.usbmux import list_devices
 
@@ -33,18 +38,25 @@ async def _list_async() -> list[IDevice]:
 
 
 def list_iphones() -> list[IDevice]:
-    """Return connected iPhones (empty list when none / usbmuxd not running)."""
+    """Return connected iPhones.
+
+    Returns an empty list when no device is connected. Raises DeviceError when
+    enumeration fails for an environmental reason (missing usbmuxd / driver).
+    """
     try:
         return asyncio.run(_list_async())
-    except FileNotFoundError:
-        # usbmuxd service not present — treat as "no devices"
+    except FileNotFoundError as exc:
+        # usbmuxd service not present (Linux) — treat as "no devices".
         return []
     except Exception as exc:  # pragma: no cover - defensive
-        raise RuntimeError(f"Failed to enumerate iPhones: {exc}") from exc
+        raise DeviceError(f"Failed to enumerate iPhones: {exc}") from exc
 
 
 if __name__ == "__main__":
-    devices = list_iphones()
-    print(f"Found {len(devices)} device(s)")
-    for dev in devices:
-        print(f"  - {dev.udid} ({dev.connection})")
+    try:
+        devices = list_iphones()
+        print(f"Found {len(devices)} device(s)")
+        for dev in devices:
+            print(f"  - {dev.udid} ({dev.connection})")
+    except DeviceError as exc:
+        print(exc)
