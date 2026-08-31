@@ -107,5 +107,7 @@ def contacts_to_vcard(db_path: str | Path) -> str:
 def write_vcards(db_path: str | Path, out_path: str | Path) -> int:
     """Export contacts and write to out_path. Returns contact count."""
     text = contacts_to_vcard(db_path)
-    Path(out_path).write_text(text, encoding="utf-8")
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
     return text.count("BEGIN:VCARD")

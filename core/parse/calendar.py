@@ -131,5 +131,7 @@ def calendar_to_ics(db_path: str | Path) -> str:
 def write_ics(db_path: str | Path, out_path: str | Path) -> int:
     """Export calendar and write to out_path. Returns event count."""
     text = calendar_to_ics(db_path)
-    Path(out_path).write_text(text, encoding="utf-8", newline="")
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8", newline="")
     return text.count("BEGIN:VEVENT")
