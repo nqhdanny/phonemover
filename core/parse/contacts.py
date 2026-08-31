@@ -56,7 +56,7 @@ def _read_multi_values(conn: sqlite3.Connection) -> dict[int, list[tuple[int, st
 def _vcard_type(label: str) -> str:
     if not label:
         return "VOICE"
-    if label.startswith("$!<") and label.endswith("!>$"):
+    if label.startswith("$!<") and label.endswith("!$"):
         inner = label[3:-3]
         return _LABEL_VALUE_TO_TYPE.get(label, inner.upper())
     return _LABEL_VALUE_TO_TYPE.get(label.lower(), "OTHER")
