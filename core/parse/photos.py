@@ -1,36 +1,23 @@
-"""Photos/videos: extract media files from an iOS backup via Manifest.db.
+"""Photos/videos: extract media files from an iOS backup.
 
-Media lives under domain `Media/DCIM/<roll>/<file>` in the backup's
-Manifest.db. Files are stored by SHA1 hash name in the backup root.
+Media lives under domain `Media/DCIM` in the backup's Manifest.db. Files are
+stored by SHA1 hash name in the backup root.
 """
 
 from __future__ import annotations
 
 import shutil
-import sqlite3
 from pathlib import Path
 from typing import Callable, Optional
+
+from core.manifest import find_by_domain
 
 HEIC_SUFFIXES = {".heic", ".heif"}
 
 
-def _manifest_conn(backup_root: str | Path) -> sqlite3.Connection:
-    db = Path(backup_root) / "Manifest.db"
-    if not db.exists():
-        raise FileNotFoundError(f"Manifest.db not found in backup: {db}")
-    return sqlite3.connect(str(db))
-
-
 def list_media_files(backup_root: str | Path) -> list[tuple[str, str]]:
     """Return [(file_id, relative_path)] for all files under Media/DCIM."""
-    with _manifest_conn(backup_root) as conn:
-        rows = conn.execute(
-            """
-            SELECT fileID, relativePath FROM Files
-            WHERE domain LIKE 'Media/DCIM/%'
-            """
-        ).fetchall()
-    return [(fid, rel) for fid, rel in rows]
+    return [(e.file_id, e.relative_path) for e in find_by_domain(backup_root, "Media/DCIM")]
 
 
 def extract_photos(
