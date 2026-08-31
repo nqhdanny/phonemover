@@ -1,45 +1,100 @@
-"""Backup engine — wraps `pymobiledevice3 backup2` as a subprocess.
+"""Backup engine — full iPhone backup via pymobiledevice3's Python API.
 
-Strategy: delegate the heavy lifting (pairing, lockdown, mobilebackup2
-protocol) to the battle-tested pymobiledevice3 CLI, parse its progress
-output, and expose a callback-friendly API.
+Uses Mobilebackup2Service directly (no subprocess) so it works identically
+when packaged into a PyInstaller exe — there is no `python` interpreter
+available inside a frozen app.
+
+The backup is written into `<dest_dir>/<udid>/` (see Mobilebackup2Service
+docstring). This module returns the *actual* backup root that holds
+Manifest.db, not the parent we passed in.
 """
 
 from __future__ import annotations
 
-import re
+import asyncio
 import shutil
-import subprocess
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 ProgressCB = Callable[[int, str], None]  # (percent 0-100, stage message)
 
+_MANIFEST = "Manifest.db"
+
 
 @dataclass
 class BackupResult:
     ok: bool
-    dest_dir: Path
+    dest_dir: Path       # the dir we passed in (parent)
+    backup_root: Path    # the actual dir containing Manifest.db (<dest>/<udid>)
+    udid: str = ""
     encrypted: bool = False
     message: str = ""
-    files_copied: int = 0
 
 
-# pymobiledevice3 prints progress like: "  42%  ..." (best-effort parsing)
-_PROGRESS_RE = re.compile(r"(\d{1,3})%")
-
-
-def _parse_progress(line: str) -> Optional[int]:
-    m = _PROGRESS_RE.search(line)
-    if m:
-        return min(int(m.group(1)), 100)
+def _find_backup_root(dest: Path) -> Optional[Path]:
+    """Locate the directory holding Manifest.db under dest (shallow scan)."""
+    if (dest / _MANIFEST).exists():
+        return dest
+    if dest.exists():
+        for child in dest.iterdir():
+            if child.is_dir() and (child / _MANIFEST).exists():
+                return child
     return None
 
 
-def _default_python() -> str:
-    return sys.executable
+async def _backup_async(
+    dest: Path,
+    udid: Optional[str],
+    password: Optional[str],
+    progress_cb: Optional[ProgressCB],
+) -> BackupResult:
+    from pymobiledevice3.lockdown import create_using_usbmux
+    from pymobiledevice3.services.mobilebackup2 import Mobilebackup2Service
+
+    result = BackupResult(ok=False, dest_dir=dest, backup_root=dest, udid=udid or "")
+
+    lockdown = await create_using_usbmux(serial=udid, autopair=True)
+    try:
+        async with Mobilebackup2Service(lockdown) as backup_client:
+            # Resolve the actual udid if not provided.
+            if not udid:
+                udid = getattr(backup_client, "_udid", None) or ""
+                result.udid = udid
+
+            last_pct = -1
+
+            def _on_progress(pct: float) -> None:
+                nonlocal last_pct
+                p = int(round(pct))
+                if p != last_pct and progress_cb:
+                    progress_cb(p, f"backing up {p}%")
+                last_pct = p
+
+            await backup_client.backup(
+                full=True,
+                backup_directory=str(dest),
+                progress_callback=_on_progress,
+                password=password or "",
+            )
+
+            if progress_cb:
+                progress_cb(100, "backup complete")
+    finally:
+        await lockdown.close()
+
+    actual_root = _find_backup_root(dest)
+    if actual_root is not None:
+        result.backup_root = actual_root
+        if actual_root != dest:
+            result.udid = actual_root.name
+
+    result.ok = actual_root is not None
+    result.encrypted = bool(password)
+    result.message = (
+        f"Backup completed at {actual_root}" if actual_root else "Backup failed: no Manifest.db produced"
+    )
+    return result
 
 
 def backup_full(
@@ -47,9 +102,9 @@ def backup_full(
     udid: Optional[str] = None,
     password: Optional[str] = None,
     progress_cb: Optional[ProgressCB] = None,
-    python_bin: str | None = None,
+    python_bin: str | None = None,  # kept for API compatibility (ignored)
 ) -> BackupResult:
-    """Create a full iPhone backup into dest_dir.
+    """Create a full iPhone backup into dest_dir (writes into <dest>/<udid>).
 
     - udid: optional, back up a specific device when several are connected.
     - password: passphrase for encrypted backups (if the user enabled it).
@@ -57,42 +112,16 @@ def backup_full(
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
-    cmd = [python_bin or _default_python(), "-m", "pymobiledevice3", "backup2", "backup"]
-    if udid:
-        cmd += ["-u", udid]
-    cmd += ["--full", str(dest)]
-    if password:
-        cmd += ["--password", password]
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert proc.stdout is not None
-
-    result = BackupResult(ok=False, dest_dir=dest)
-    log_lines: list[str] = []
-    for line in proc.stdout:
-        line = line.rstrip()
-        log_lines.append(line)
-        pct = _parse_progress(line)
-        if pct is not None and progress_cb:
-            progress_cb(pct, line.strip())
-        elif progress_cb:
-            # stage lines without percent
-            progress_cb(None if not log_lines else 0, line.strip())  # type: ignore[arg-type]
-
-    proc.wait()
-    if proc.returncode == 0:
-        result.ok = True
-        result.encrypted = bool(password)
-        result.message = f"Backup completed at {dest}"
-    else:
-        result.message = f"Backup failed (exit {proc.returncode}): {log_lines[-3:] if log_lines else 'no output'}"
-    return result
+    try:
+        return asyncio.run(_backup_async(dest, udid, password, progress_cb))
+    except Exception as exc:  # noqa: BLE001 - surface to UI
+        return BackupResult(
+            ok=False,
+            dest_dir=dest,
+            backup_root=dest,
+            udid=udid or "",
+            message=f"Backup failed: {exc}",
+        )
 
 
 def estimate_backup_size(dest_dir: str | Path) -> int:

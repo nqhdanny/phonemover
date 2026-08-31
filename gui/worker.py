@@ -6,6 +6,7 @@ from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
 
+from core.backup import backup_full
 from core.engine import MigrationEngine
 from core.models import DataType
 
@@ -43,6 +44,60 @@ class MigrationWorker(QThread):
 
     def _on_progress(self, percent: int, stage: str, message: str) -> None:
         self.progress.emit(percent, message or stage)
+
+
+class BackupAndMigrateWorker(QThread):
+    """One-click flow: full backup, then migrate — with phased progress."""
+
+    # stage: "backup" | "migrate" | "done"
+    progress = Signal(int, str, str)   # (percent 0-100, stage, message)
+    finished_ok = Signal(object)       # MigrationResult
+    failed = Signal(str)               # error message
+
+    def __init__(
+        self,
+        backup_dir: str,
+        dest_root: str,
+        data_types: list[DataType],
+        udid: Optional[str] = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.backup_dir = backup_dir
+        self.dest_root = dest_root
+        self.data_types = data_types
+        self.udid = udid
+
+    def run(self) -> None:  # noqa: D102 - QThread entry point
+        try:
+            # Phase 1: backup
+            self.progress.emit(0, "backup", "backing up")
+            backup = backup_full(
+                self.backup_dir,
+                udid=self.udid,
+                progress_cb=lambda pct, msg: self.progress.emit(
+                    pct or 0, "backup", msg or "backing up"
+                ),
+            )
+            if not backup.ok:
+                self.failed.emit(backup.message)
+                return
+
+            # Phase 2: migrate
+            self.progress.emit(0, "migrate", "migrating")
+            engine = MigrationEngine(
+                backup.backup_root,
+                self.dest_root,
+                progress_cb=lambda pct, stage, msg: self.progress.emit(
+                    pct, "migrate", msg or stage
+                ),
+            )
+            result = engine.run(self.data_types)
+            result.backup = backup
+            self.progress.emit(100, "done", "done")
+            self.finished_ok.emit(result)
+        except Exception as exc:  # noqa: BLE001 - surface to UI
+            self.failed.emit(str(exc))
 
 
 class DeviceScanWorker(QThread):

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from core.models import DATA_TYPES, DataType, v1_data_types
 from i18n import LANGUAGES, set_language, t
 
-from .worker import DeviceScanWorker, MigrationWorker
+from .worker import BackupAndMigrateWorker, DeviceScanWorker
 
 # Data type -> i18n key
 _TYPE_KEY = {
@@ -52,8 +52,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self._worker: MigrationWorker | None = None
+        self._worker: BackupAndMigrateWorker | None = None
         self._scan_worker: DeviceScanWorker | None = None
+        self._udid: str | None = None
         self._type_checks: dict[DataType, QCheckBox] = {}
         self._build_ui()
         self.setWindowTitle(t('app.title'))
@@ -195,6 +196,7 @@ class MainWindow(QMainWindow):
         self._scan_worker.start()
 
     def _on_scan_found(self, devices) -> None:
+        self._udid = devices[0].udid if devices and devices[0].udid else None
         udids = ', '.join(d.udid for d in devices if d.udid)
         self.device_label.setText(t('device.found') + (f' ({udids})' if udids else ''))
         self.device_label.setStyleSheet('color: #2e7d32;')
@@ -224,22 +226,24 @@ class MainWindow(QMainWindow):
         if not selected:
             QMessageBox.warning(self, t('app.title'), t('data.title'))
             return
-        backup_root = self.dest_edit.text().strip()
-        if not backup_root:
+        backup_dir = self.dest_edit.text().strip()
+        if not backup_dir:
             QMessageBox.warning(self, t('app.title'), t('dest.folder'))
             return
 
-        # For now: backup_root is a folder that already holds an extracted
-        # backup (Manifest.db). Live backup-on-connect lands with device work.
-        dest_root = str(Path(backup_root).parent / 'PhoneMover_out')
+        # One-click flow: back up iPhone into backup_dir, then migrate.
+        dest_root = str(Path(backup_dir).parent / 'PhoneMover_out')
 
-        self._worker = MigrationWorker(backup_root, dest_root, selected, self)
+        self._worker = BackupAndMigrateWorker(
+            backup_dir, dest_root, selected, udid=self._udid, parent=self,
+        )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished_ok.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress.setValue(0)
+        self.status_label.setText(t('progress.backup'))
         self._worker.start()
 
     def _on_cancel(self) -> None:
@@ -251,9 +255,17 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.status_label.setText(t('progress.waiting'))
 
-    def _on_progress(self, percent: int, message: str) -> None:
+    def _on_progress(self, percent: int, stage: str, message: str) -> None:
         self.progress.setValue(percent)
-        self.status_label.setText(message)
+        if stage == 'backup':
+            label = t('progress.backup')
+        elif stage == 'migrate':
+            label = t('progress.migrating')
+        else:
+            label = t('progress.done')
+        # show percent + short detail
+        detail = message if message and message not in ('backing up', 'migrating', 'done') else ''
+        self.status_label.setText(f'{label} {percent}%' + (f' — {detail}' if detail else ''))
 
     def _on_finished(self, result) -> None:
         self.start_btn.setEnabled(True)

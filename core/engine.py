@@ -182,8 +182,8 @@ def backup_and_migrate(
     if not backup_result.ok:
         return MigrationResult(ok=False, backup=backup_result, message=backup_result.message)
 
-    # Phase 2: migrate
-    engine = MigrationEngine(backup_result.dest_dir, dest_root, progress_cb=progress_cb)
+    # Phase 2: migrate — use the actual backup root that holds Manifest.db.
+    engine = MigrationEngine(backup_result.backup_root, dest_root, progress_cb=progress_cb)
     result = engine.run(data_types)
     result.backup = backup_result
     return result
