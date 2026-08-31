@@ -128,6 +128,10 @@ class MainWindow(QMainWindow):
 
         self.dest_folder_label = QLabel(t('dest.folder'), box)
         v.addWidget(self.dest_folder_label)
+        self.dest_hint_label = QLabel(t('dest.hint'), box)
+        self.dest_hint_label.setStyleSheet('color: #888; font-size: 11px;')
+        self.dest_hint_label.setWordWrap(True)
+        v.addWidget(self.dest_hint_label)
         row = QHBoxLayout()
         self.dest_edit = QLineEdit(box)
         self.dest_edit.setPlaceholderText(r'D:\PhoneMover\out')
@@ -181,6 +185,7 @@ class MainWindow(QMainWindow):
         for dt, cb in self._type_checks.items():
             cb.setText(t(_TYPE_KEY[dt]))
         self.dest_folder_label.setText(t('dest.folder'))
+        self.dest_hint_label.setText(t('dest.hint'))
         # group box titles
         self.data_group.setTitle(t('data.title'))
         self.dest_group.setTitle(t('dest.title'))
@@ -239,8 +244,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, t('app.title'), t('dest.folder'))
             return
 
-        # One-click flow: back up iPhone into backup_dir, then migrate.
-        dest_root = str(Path(backup_dir).parent / 'PhoneMover_out')
+        # One-click flow: back up iPhone into backup_dir, then migrate into
+        # <backup_dir>/PhoneMover_out (predictable sibling folder, avoids
+        # the Windows Path('D:/foo').parent == 'D:' pitfall).
+        dest_root = str(Path(backup_dir) / 'PhoneMover_out')
 
         self._worker = BackupAndMigrateWorker(
             backup_dir, dest_root, selected, udid=self._udid, parent=self,
