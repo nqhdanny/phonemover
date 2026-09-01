@@ -33,6 +33,7 @@ def current_language() -> str:
 _EN: dict[str, str] = {
     'app.title': 'PhoneMover',
     'app.subtitle': 'iPhone to HUAWEI data transfer',
+    'app.version': 'PhoneMover v{version}',
     'nav.transfer': 'Transfer',
     'nav.settings': 'Settings',
     'device.scanning': 'Scanning for iPhone…',
@@ -67,6 +68,7 @@ _EN: dict[str, str] = {
 _RU: dict[str, str] = {
     'app.title': 'PhoneMover',
     'app.subtitle': 'Перенос данных iPhone → HUAWEI',
+    'app.version': 'PhoneMover v{version}',
     'nav.transfer': 'Перенос',
     'nav.settings': 'Настройки',
     'device.scanning': 'Поиск iPhone…',

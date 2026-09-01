@@ -28,6 +28,8 @@ jobs:
           pyinstaller --onefile --windowed --name PhoneMover `
             --collect-all pymobiledevice3 `
             --collect-all pillow_heif `
+            --add-data "assets;assets" `
+            --icon "assets\logo.png" `
             run.py
 
       - name: Upload artifact

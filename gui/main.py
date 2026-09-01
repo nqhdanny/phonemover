@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.__version__ import __version__
 from core.models import DATA_TYPES, DataType, v1_data_types
 from i18n import LANGUAGES, set_language, t
 
@@ -46,6 +48,22 @@ _TYPE_KEY = {
     DataType.MUSIC: 'data.music',
     DataType.CALENDAR: 'data.calendar',
 }
+
+
+def _logo_path() -> Path:
+    """Locate assets/logo.png - works in dev and inside a PyInstaller exe."""
+    base = getattr(sys, '_MEIPASS', None)
+    candidates = [
+        Path(base) / 'assets' / 'logo.png' if base else None,
+        Path(__file__).resolve().parent.parent / 'assets' / 'logo.png',
+    ]
+    for p in candidates:
+        if p and p.is_file():
+            return p
+    return candidates[1]
+
+
+LOGO_PATH = _logo_path()
 
 
 class MainWindow(QMainWindow):
@@ -76,8 +94,18 @@ class MainWindow(QMainWindow):
 
     def _build_header(self) -> QHBoxLayout:
         layout = QHBoxLayout()
+
+        # Logo (left of title)
+        logo_label = QLabel(self)
+        pixmap = QPixmap(str(LOGO_PATH))
+        scaled = pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        logo_label.setPixmap(scaled)
+        logo_label.setFixedWidth(56)
+        layout.addWidget(logo_label)
+
+        # Title column: PhoneMover vX.Y.Z + subtitle
         title_col = QVBoxLayout()
-        title = QLabel(t('app.title'), self)
+        title = QLabel(t('app.version', version=__version__), self)
         title.setStyleSheet('font-size: 22px; font-weight: bold;')
         subtitle = QLabel(t('app.subtitle'), self)
         subtitle.setStyleSheet('color: #666;')
