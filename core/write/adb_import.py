@@ -1,7 +1,7 @@
 """ADB import — push converted files to the HUAWEI device and trigger import.
 
 The HUAWEI side runs the PhoneMover Importer APK (com.phonemover.importer),
-which exposes a broadcast receiver that reads files from /sdcard/PhoneMover/
+which exposes a foreground Activity + receiver that reads files from /data/local/tmp/PhoneMover/
 and inserts rows via the system ContentResolver.
 
 Data-type -> channel mapping:
@@ -15,7 +15,7 @@ Data-type -> channel mapping:
 This module wraps the `adb` commands the Windows host runs:
   1. adb install the APK (once)
   2. adb push contacts.vcf / calendar.ics / reminders.ics
-  3. am broadcast ... to trigger import
+  3. am start ... to trigger import (foreground Activity)
 
 The adb binary and APK are bundled inside the exe (see core.write.vendor).
 """
@@ -32,7 +32,7 @@ from core.write.vendor import find_adb, find_apk
 
 APK_PACKAGE = "com.phonemover.importer"
 IMPORT_ACTION = "com.phonemover.importer.IMPORT"
-DEVICE_DIR = "/sdcard/PhoneMover"
+DEVICE_DIR = "/data/local/tmp/PhoneMover"
 
 
 def _adb() -> str:
@@ -61,7 +61,17 @@ def install_apk(apk_path: str | Path | None = None) -> bool:
     if not apk.exists():
         raise FileNotFoundError(f"APK not found: {apk}")
     proc = _run("install", "-r", str(apk))
-    return "Success" in proc.stdout
+    ok = "Success" in proc.stdout
+    if ok:
+        # Launch the invisible Activity once so the app leaves the "stopped"
+        # state. A stopped app never receives broadcasts and is blocked by
+        # EMUI's background-execution policy.
+        _run(
+            "shell", "am", "start",
+            "-n", f"{APK_PACKAGE}/.ImportActivity",
+            timeout=30,
+        )
+    return ok
 
 
 # Runtime (dangerous) permissions the importer APK needs. On Android 6+ these
@@ -73,6 +83,7 @@ REQUIRED_PERMISSIONS = [
     "android.permission.WRITE_CONTACTS",
     "android.permission.READ_CALENDAR",
     "android.permission.WRITE_CALENDAR",
+    "android.permission.POST_NOTIFICATIONS",
 ]
 
 
@@ -125,36 +136,35 @@ def push_and_import(
     if push.returncode != 0:
         return ImportResult(False, 0, push.stderr.strip() or "adb push failed")
 
-    broadcast = run_cmd(
+    # Android 12+ / EMUI blocks manifest receivers from receiving background
+    # broadcasts ("Background execution not allowed"), so we trigger the import
+    # through the foreground ImportActivity instead of `am broadcast`. The
+    # Activity has Theme.NoDisplay and finishes immediately.
+    start = run_cmd(
         base
         + [
-            "shell",
-            "am",
-            "broadcast",
-            "-a",
-            IMPORT_ACTION,
-            "--es",
-            "type",
-            data_type,
-            "--es",
-            "path",
-            remote,
+            "shell", "am", "start",
+            "-n", f"{APK_PACKAGE}/.ImportActivity",
+            "--es", "type", data_type,
+            "--es", "path", remote,
         ],
         capture_output=True,
         text=True,
         timeout=120,
     )
 
-    out = (broadcast.stdout or "") + (broadcast.stderr or "")
+    out = (start.stdout or "") + (start.stderr or "")
 
-    # `am broadcast` sends a NON-ordered broadcast, so the receiver's
-    # setResultData()/setResult() never reach us. Instead the APK writes the
-    # count to /sdcard/PhoneMover/result_<type>.txt, which we read back.
+    # The Activity writes the count to the app-private files dir (scoped
+    # storage prevents writing to /sdcard/PhoneMover on Android 11+). Read it
+    # back via `adb shell run-as <pkg> cat files/result_<type>.txt`.
     count = 0
-    result_file = f"{DEVICE_DIR}/result_{data_type}.txt"
     raw_count = ""
-    for _attempt in range(5):  # brief retry in case the write lags the broadcast
-        cat = run_cmd(base + ["shell", "cat", result_file], capture_output=True, text=True, timeout=30)
+    for _attempt in range(8):  # retry: the Activity import may take a moment
+        cat = run_cmd(
+            base + ["shell", "run-as", APK_PACKAGE, "cat", f"files/result_{data_type}.txt"],
+            capture_output=True, text=True, timeout=30,
+        )
         raw_count = (cat.stdout or "").strip()
         if raw_count:
             break
@@ -264,7 +274,7 @@ def push_media_dir(
     # Trigger a media scan so the HUAWEI Gallery / Music apps index the newly
     # pushed files. adb push writes files directly and does NOT update the
     # MediaStore database, so without this the files are on disk but invisible
-    # in the gallery. The importer APK exposes a "scan" broadcast that runs
+    # in the gallery. The importer APK exposes a "scan" action that runs
     # MediaScannerConnection.scanFile() over the whole directory.
     _trigger_media_scan(base, remote)
 
@@ -284,8 +294,8 @@ def _trigger_media_scan(base: list[str], remote_dir: str) -> None:
     run_cmd(
         base
         + [
-            "shell", "am", "broadcast",
-            "-a", IMPORT_ACTION,
+            "shell", "am", "start",
+            "-n", f"{APK_PACKAGE}/.ImportActivity",
             "--es", "type", "scan",
             "--es", "path", remote_dir,
         ],

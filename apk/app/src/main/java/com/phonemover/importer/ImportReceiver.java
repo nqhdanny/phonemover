@@ -6,6 +6,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.ContentUris;
 import android.net.Uri;
 import android.provider.CalendarContract;
 import android.provider.ContactsContract;
@@ -39,15 +40,22 @@ public final class ImportReceiver extends BroadcastReceiver {
     public static final String EXTRA_TYPE = "type";   // "contacts" | "calendar"
     public static final String EXTRA_PATH = "path";   // absolute file path
 
-    private static final String IMPORT_DIR = "/sdcard/PhoneMover";
+    private static final String IMPORT_DIR = "/data/local/tmp/PhoneMover";
 
     @Override
     public void onReceive(Context context, Intent intent) {
         if (intent == null || !ACTION_IMPORT.equals(intent.getAction())) {
             return;
         }
-        String type = intent.getStringExtra(EXTRA_TYPE);
-        String path = intent.getStringExtra(EXTRA_PATH);
+        run(context, intent.getStringExtra(EXTRA_TYPE), intent.getStringExtra(EXTRA_PATH));
+    }
+
+    /**
+     * Shared import entry point, callable both from the broadcast receiver and
+     * from the foreground ImportActivity (which is the reliable path on
+     * Android 12+ / EMUI, where background broadcast execution is blocked).
+     */
+    public static void run(Context context, String type, String path) {
         if (TextUtils.isEmpty(type)) {
             type = "contacts";
         }
@@ -66,7 +74,7 @@ public final class ImportReceiver extends BroadcastReceiver {
             // Media rescan: index a directory so the Gallery/Music apps see
             // files pushed via adb. Returns the number of files scanned.
             count = scanMedia(context, new File(path));
-            writeResult(type, count);
+            writeResult(context, type, count);
             return;
         } else if ("calendar".equals(type)) {
             count = importCalendar(context, new File(path));
@@ -80,7 +88,7 @@ public final class ImportReceiver extends BroadcastReceiver {
         // setResult() have no effect and their value never reaches the host.
         // Instead we write the count to a result file on /sdcard, which the
         // host reads back via `adb shell cat`.
-        writeResult(type, count);
+        writeResult(context, type, count);
     }
 
     /**
@@ -88,19 +96,37 @@ public final class ImportReceiver extends BroadcastReceiver {
      * host can read it back (the broadcast result channel is unavailable for
      * non-ordered broadcasts).
      */
-    private void writeResult(String type, int count) {
-        File dir = new File(IMPORT_DIR);
-        if (!dir.exists()) {
-            dir.mkdirs();
+    private static void writeResult(Context context, String type, int count) {
+        String value = String.valueOf(count);
+        // Primary: app-private files dir (always writable, no scoped-storage
+        // restriction). The host reads it via `adb shell run-as <pkg> cat files/result_<type>.txt`.
+        boolean wrote = false;
+        if (context != null) {
+            try {
+                File dir = context.getFilesDir();
+                File out = new File(dir, "result_" + type + ".txt");
+                java.io.FileWriter w = new java.io.FileWriter(out);
+                w.write(value);
+                w.close();
+                wrote = true;
+            } catch (Exception ignored) {
+                // fall through to legacy path
+            }
         }
-        File out = new File(dir, "result_" + type + ".txt");
-        try {
-            java.io.FileWriter w = new java.io.FileWriter(out);
-            w.write(String.valueOf(count));
-            w.close();
-        } catch (Exception ignored) {
-            // Best effort: if we can't write the result file, the host will
-            // report 0, but the actual import may still have succeeded.
+        if (!wrote) {
+            // Legacy: /sdcard/PhoneMover (works on pre-Android-11 devices).
+            try {
+                File dir = new File(IMPORT_DIR);
+                if (!dir.exists()) {
+                    dir.mkdirs();
+                }
+                File out = new File(dir, "result_" + type + ".txt");
+                java.io.FileWriter w = new java.io.FileWriter(out);
+                w.write(value);
+                w.close();
+            } catch (Exception ignored) {
+                // Best effort.
+            }
         }
     }
 
@@ -115,7 +141,7 @@ public final class ImportReceiver extends BroadcastReceiver {
      * We use MediaScannerConnection.scanFile() (the public API) over the whole
      * directory, which is reliable on HUAWEI/EMUI.
      */
-    private int scanMedia(Context context, File dir) {
+    private static int scanMedia(Context context, File dir) {
         if (dir == null || !dir.exists() || !dir.isDirectory()) {
             return -1;
         }
@@ -148,7 +174,7 @@ public final class ImportReceiver extends BroadcastReceiver {
 
     // -- Contacts ---------------------------------------------------------
 
-    private int importContacts(Context context, File file) {
+    private static int importContacts(Context context, File file) {
         if (!file.exists()) {
             return -1;
         }
@@ -177,7 +203,12 @@ public final class ImportReceiver extends BroadcastReceiver {
             String fullName = extractField(card, "FN:");
             String givenName = "";
             String familyName = "";
-            int nameIdx = card.indexOf("N:");
+            // Match "N:" only at the START of a line. A naive indexOf("N:")
+            // would also match the "N:" inside "BEGIN:" (the N of "BEGIN"
+            // followed by the colon), corrupting the family name. Line-anchored
+            // search avoids that.
+            int nameIdx = card.indexOf("\nN:");
+            nameIdx = nameIdx >= 0 ? nameIdx + 1 : -1;
             if (nameIdx >= 0) {
                 String nLine = card.substring(nameIdx + 2);
                 int nl = nLine.indexOf('\n');
@@ -243,7 +274,7 @@ public final class ImportReceiver extends BroadcastReceiver {
 
     // -- Calendar ---------------------------------------------------------
 
-    private int importCalendar(Context context, File file) {
+    private static int importCalendar(Context context, File file) {
         if (!file.exists()) {
             return -1;
         }
@@ -287,9 +318,18 @@ public final class ImportReceiver extends BroadcastReceiver {
             values.put(CalendarContract.Events.EVENT_TIMEZONE, "UTC");
             values.put(CalendarContract.Events.ALL_DAY, allDay ? 1 : 0);
 
+            // Parse VALARM (reminder lead minutes). -1 = no reminder.
+            int reminderMinutes = parseIcsAlarm(event);
+            // A reminder requires HAS_ALARM=1 on the event, otherwise the
+            // system treats it as a silent event even if a Reminders row exists.
+            values.put(CalendarContract.Events.HAS_ALARM, reminderMinutes >= 0 ? 1 : 0);
+
             try {
                 Uri uri = resolver.insert(CalendarContract.Events.CONTENT_URI, values);
                 if (uri != null) {
+                    if (reminderMinutes >= 0) {
+                        addReminder(resolver, ContentUris.parseId(uri), reminderMinutes);
+                    }
                     count++;
                 }
             } catch (Exception ignored) {
@@ -309,7 +349,7 @@ public final class ImportReceiver extends BroadcastReceiver {
      * no due date). The original reminder title/notes are preserved as the
      * event title/description, prefixed with "[Reminder]".
      */
-    private int importReminders(Context context, File file) {
+    private static int importReminders(Context context, File file) {
         if (!file.exists()) {
             return -1;
         }
@@ -352,10 +392,14 @@ public final class ImportReceiver extends BroadcastReceiver {
             }
             values.put(CalendarContract.Events.EVENT_TIMEZONE, "UTC");
             values.put(CalendarContract.Events.ALL_DAY, 0);
+            // A reminder converted from a VTODO fires at the DUE time.
+            values.put(CalendarContract.Events.HAS_ALARM, 1);
 
             try {
                 Uri uri = resolver.insert(CalendarContract.Events.CONTENT_URI, values);
                 if (uri != null) {
+                    // Fire at the DUE time (0 minutes before).
+                    addReminder(resolver, ContentUris.parseId(uri), 0);
                     count++;
                 }
             } catch (Exception ignored) {
@@ -365,9 +409,73 @@ public final class ImportReceiver extends BroadcastReceiver {
         return count;
     }
 
+    /**
+     * Insert a reminder row for an event. All three fields are REQUIRED by
+     * the Calendar Provider; omitting any of them silently drops the reminder.
+     * {@code minutes} is the lead time (0 = at start, positive = minutes
+     * before). METHOD_ALERT is the standard (and HUAWEI-verified) method.
+     */
+    private static void addReminder(ContentResolver resolver, long eventId, int minutes) {
+        ContentValues rv = new ContentValues();
+        rv.put(CalendarContract.Reminders.EVENT_ID, eventId);
+        rv.put(CalendarContract.Reminders.MINUTES, minutes);
+        rv.put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT);
+        try {
+            resolver.insert(CalendarContract.Reminders.CONTENT_URI, rv);
+        } catch (Exception ignored) {
+            // A failed reminder insert must not discard the event itself.
+        }
+    }
+
+    /**
+     * Parse the first VALARM in an ICS VEVENT and return the reminder lead
+     * time in minutes. Returns -1 when there is no VALARM (so the caller can
+     * decide whether to leave the event without an alarm).
+     *
+     * Supports:
+     *   TRIGGER:-PT15M  -> 15 (15 minutes before)
+     *   TRIGGER:-PT1H   -> 60
+     *   TRIGGER:PT0S    -> 0  (at start)
+     *   TRIGGER;VALUE=DATE-TIME:... -> 0 (absolute time = fire at start)
+     */
+    private static int parseIcsAlarm(String event) {
+        int idx = event.indexOf("BEGIN:VALARM");
+        if (idx < 0) {
+            return -1;
+        }
+        String alarm = event.substring(idx);
+        String trigger = extractField(alarm, "TRIGGER:");
+        if (TextUtils.isEmpty(trigger)) {
+            trigger = extractField(alarm, "TRIGGER;VALUE=DATE-TIME:");
+            return TextUtils.isEmpty(trigger) ? -1 : 0;
+        }
+        trigger = trigger.trim();
+        if (trigger.startsWith("-P") || trigger.startsWith("+P") || trigger.startsWith("P")) {
+            boolean negative = trigger.startsWith("-");
+            String dur = trigger.substring(1); // drop leading -/+; "P..." remains
+            if (dur.startsWith("PT")) {
+                dur = dur.substring(2);
+            } else if (dur.startsWith("P")) {
+                dur = dur.substring(1);
+            }
+            int minutes = 0;
+            int days = 0, hours = 0, mins = 0;
+            // Parse D / H / M / S
+            java.util.regex.Matcher dm = java.util.regex.Pattern.compile("(\\d+)D").matcher(dur);
+            if (dm.find()) days = Integer.parseInt(dm.group(1));
+            java.util.regex.Matcher hm = java.util.regex.Pattern.compile("(\\d+)H").matcher(dur);
+            if (hm.find()) hours = Integer.parseInt(hm.group(1));
+            java.util.regex.Matcher mm = java.util.regex.Pattern.compile("(\\d+)M").matcher(dur);
+            if (mm.find()) mins = Integer.parseInt(mm.group(1));
+            minutes = days * 1440 + hours * 60 + mins;
+            return negative ? minutes : -minutes;
+        }
+        return -1;
+    }
+
     // -- Helpers ----------------------------------------------------------
 
-    private long defaultCalendarId(Context context) {
+    private static long defaultCalendarId(Context context) {
         String[] projection = { CalendarContract.Calendars._ID };
         try {
             android.database.Cursor c = context.getContentResolver().query(
@@ -387,7 +495,7 @@ public final class ImportReceiver extends BroadcastReceiver {
         return 1L; // fallback
     }
 
-    private String readFile(File file) {
+    private static String readFile(File file) {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
             StringBuilder sb = new StringBuilder();
@@ -401,7 +509,7 @@ public final class ImportReceiver extends BroadcastReceiver {
         }
     }
 
-    private String extractField(String block, String key) {
+    private static String extractField(String block, String key) {
         int idx = block.indexOf(key);
         if (idx < 0) {
             return "";
@@ -414,21 +522,31 @@ public final class ImportReceiver extends BroadcastReceiver {
         return unescape(line.trim());
     }
 
-    private String valueAfterColon(String line) {
-        int idx = line.indexOf(':');
+    private static String valueAfterColon(String line) {
+        // vCard lines look like "TEL;TYPE=CELL;VALUE=uri:tel:+1234" or
+        // "TEL:+1234". The value is everything AFTER the LAST colon, and any
+        // ";..." before that colon are parameters to strip, not part of the
+        // value. Using lastIndexOf(':') avoids corrupting numbers when a
+        // parameter block contains a colon (e.g. "TEL;X-FOO=a:b:+1234").
+        int idx = line.lastIndexOf(':');
         if (idx < 0) {
             return "";
         }
         String v = line.substring(idx + 1).trim();
-        // Strip vCard parameters like ";TYPE=CELL" (already handled by caller split).
-        return v;
+        // Drop any vCard parameter continuation that leaked into the value
+        // (e.g. a bare ";TYPE=CELL" suffix), then unescape.
+        int semi = v.indexOf(';');
+        if (semi >= 0) {
+            v = v.substring(0, semi);
+        }
+        return v.trim();
     }
 
-    private String unescape(String s) {
+    private static String unescape(String s) {
         return s.replace("\\,", ",").replace("\\;", ";").replace("\\n", "\n").replace("\\\\", "\\");
     }
 
-    private long parseIcsDate(String event, String key) {
+    private static long parseIcsDate(String event, String key) {
         // Accept DTSTART:YYYYMMDDTHHMMSSZ or DTSTART;VALUE=DATE:YYYYMMDD
         String raw = extractField(event, key + ";VALUE=DATE:");
         if (TextUtils.isEmpty(raw)) {
