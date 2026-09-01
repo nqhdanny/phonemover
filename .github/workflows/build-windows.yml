@@ -29,6 +29,11 @@ jobs:
             --collect-all pymobiledevice3 `
             --collect-all pillow_heif `
             --add-data "assets;assets" `
+            --add-binary "vendor\adb.exe;vendor" `
+            --add-binary "vendor\AdbWinApi.dll;vendor" `
+            --add-binary "vendor\AdbWinUsbApi.dll;vendor" `
+            --add-binary "vendor\libwinpthread-1.dll;vendor" `
+            --add-binary "vendor\PhoneMoverImporter.apk;vendor" `
             --icon "assets\logo.png" `
             run.py
 

@@ -15,11 +15,14 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from core.backup import BackupResult, backup_full
-from core.manifest import find_by_path, resolve_blob
+from core.manifest import find_by_domain, find_by_path, resolve_blob
 from core.models import DATA_TYPES, DataType
+from core.parse.bookmarks import write_bookmarks
 from core.parse.calendar import write_ics
 from core.parse.contacts import write_vcards
+from core.parse.notes import write_notes
 from core.parse.photos import extract_photos, extract_videos
+from core.parse.reminders import write_reminders
 from core.write.mtp import copy_media_tree
 
 ProgressCB = Callable[[int, str, str], None]  # (percent 0-100, stage, message)
@@ -126,6 +129,60 @@ class MigrationEngine:
         msg = "" if ok else "no music found under Media/iTunes_Control/Music"
         return TypeResult(DataType.MUSIC, ok, n, msg, out)
 
+    def _migrate_notes(self) -> TypeResult:
+        db = self._resolve_db(DataType.NOTES)
+        if db is None or not db.exists():
+            return TypeResult(DataType.NOTES, False, 0, "notes.sqlite not found in backup")
+        out = self.dest_root / "apk_assets" / "notes.txt"
+        n = write_notes(db, out)
+        ok = n > 0
+        msg = "" if ok else "no notes found in Notes store"
+        return TypeResult(DataType.NOTES, ok, n, msg, out)
+
+    def _migrate_bookmarks(self) -> TypeResult:
+        db = self._resolve_db(DataType.BOOKMARKS)
+        if db is None or not db.exists():
+            return TypeResult(DataType.BOOKMARKS, False, 0, "Bookmarks.db not found in backup")
+        out = self.dest_root / "apk_assets" / "bookmarks.html"
+        n = write_bookmarks(db, out)
+        ok = n > 0
+        msg = "" if ok else "no bookmarks found in Safari Bookmarks"
+        return TypeResult(DataType.BOOKMARKS, ok, n, msg, out)
+
+    def _resolve_reminders_dbs(self) -> list[Path]:
+        """Resolve every Reminders CoreData sqlite file in the backup.
+
+        Reminders live in multiple ``*.sqlite`` files under
+        ``AppDomainGroup-group.com.apple.reminders/Container_v1/Stores``
+        (one per account + a Data-local.sqlite). We collect them all.
+
+        Note: the physical blob is named by SHA1 (no .sqlite suffix), so we
+        filter by the manifest ``relative_path``, then resolve each blob.
+        """
+        domain = DATA_TYPES[DataType.REMINDERS].backup_domain
+        prefix = domain.partition("/")[0]
+        entries = find_by_domain(self.backup_root, prefix)
+        dbs: list[Path] = []
+        seen: set[str] = set()
+        for e in entries:
+            if not e.relative_path.endswith(".sqlite"):
+                continue
+            blob = resolve_blob(self.backup_root, e)
+            if blob.is_file() and str(blob) not in seen:
+                seen.add(str(blob))
+                dbs.append(blob)
+        return dbs
+
+    def _migrate_reminders(self) -> TypeResult:
+        dbs = self._resolve_reminders_dbs()
+        if not dbs:
+            return TypeResult(DataType.REMINDERS, False, 0, "no Reminders sqlite found in backup")
+        out = self.dest_root / "apk_assets" / "reminders.ics"
+        n = write_reminders(dbs, out)
+        ok = n > 0
+        msg = "" if ok else "no reminders found in Reminders store"
+        return TypeResult(DataType.REMINDERS, ok, n, msg, out)
+
     def _copy_domain(self, domain: str, dest_dir: Path) -> int:
         from core.manifest import find_by_domain
 
@@ -152,6 +209,9 @@ class MigrationEngine:
             DataType.PHOTOS: self._migrate_photos,
             DataType.VIDEOS: self._migrate_videos,
             DataType.MUSIC: self._migrate_music,
+            DataType.NOTES: self._migrate_notes,
+            DataType.BOOKMARKS: self._migrate_bookmarks,
+            DataType.REMINDERS: self._migrate_reminders,
         }[data_type]
 
     def run(self, data_types: Iterable[DataType]) -> MigrationResult:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
@@ -94,6 +95,33 @@ class BackupAndMigrateWorker(QThread):
             )
             result = engine.run(self.data_types)
             result.backup = backup
+
+            # Phase 3: import to HUAWEI (only for APK-backed types).
+            # If a HUAWEI phone is connected via adb, install the APK and
+            # push + import contacts/calendar/reminders automatically.
+            apk_assets = Path(self.dest_root) / "apk_assets"
+            huawei = None
+            if apk_assets.exists():
+                try:
+                    from core.write.huawei import migrate_to_huawei
+
+                    self.progress.emit(95, "huawei", "importing to HUAWEI")
+                    huawei = migrate_to_huawei(
+                        apk_assets,
+                        progress_cb=lambda pct, msg: self.progress.emit(
+                            pct, "huawei", msg
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - huawei import is best-effort
+                    huawei = type("H", (), {})()
+                    huawei.ok = False
+                    huawei.apk_installed = False
+                    huawei.types = []
+                    huawei.succeeded = 0
+                    huawei.total = 0
+                    huawei.message = str(exc)
+            result.huawei = huawei
+
             self.progress.emit(100, "done", "done")
             self.finished_ok.emit(result)
         except Exception as exc:  # noqa: BLE001 - surface to UI

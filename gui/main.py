@@ -48,6 +48,9 @@ _TYPE_KEY = {
     DataType.VIDEOS: 'data.videos',
     DataType.MUSIC: 'data.music',
     DataType.CALENDAR: 'data.calendar',
+    DataType.NOTES: 'data.notes',
+    DataType.BOOKMARKS: 'data.bookmarks',
+    DataType.REMINDERS: 'data.reminders',
 }
 
 
@@ -318,6 +321,8 @@ class MainWindow(QMainWindow):
             label = t('progress.backup')
         elif stage == 'migrate':
             label = t('progress.migrating')
+        elif stage == 'huawei':
+            label = t('progress.importing')
         else:
             label = t('progress.done')
         # show percent + short detail
@@ -337,6 +342,18 @@ class MainWindow(QMainWindow):
             lines.append(f"[{mark}] {tr.data_type.value}: {detail}")
         if hasattr(result, 'backup') and result.backup and getattr(result.backup, 'backup_root', None):
             lines.append(f"backup: {result.backup.backup_root}")
+
+        # HUAWEI-side import result (best-effort phase 3).
+        hw = getattr(result, "huawei", None)
+        if hw is not None:
+            lines.append("")
+            if hw.apk_installed:
+                lines.append("[OK] importer APK installed on HUAWEI")
+            for ht in getattr(hw, "types", []):
+                mark = 'OK ' if ht.get("ok") else 'FAIL'
+                lines.append(f"[{mark}] huawei/{ht.get('type')}: {ht.get('count', 0)} item(s)")
+            lines.append(f"huawei: {hw.message}")
+
         self.log_edit.setPlainText("\n".join(lines))
 
         if result.ok:

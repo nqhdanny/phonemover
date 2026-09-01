@@ -28,3 +28,8 @@ apk/build/
 apk/app/build/
 apk/local.properties
 *.apk
+
+# Bundled vendor binaries are tracked (needed by the packager):
+#   vendor/PhoneMoverImporter.apk  — the importer APK
+#   vendor/adb.exe + DLLs           — Windows adb
+!vendor/PhoneMoverImporter.apk

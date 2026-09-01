@@ -1,22 +1,33 @@
-"""ADB import — push vCard/ICS to the HUAWEI device and trigger import.
+"""ADB import — push converted files to the HUAWEI device and trigger import.
 
 The HUAWEI side runs the PhoneMover Importer APK (com.phonemover.importer),
 which exposes a broadcast receiver that reads files from /sdcard/PhoneMover/
-and inserts contacts/calendar rows via the system ContentResolver.
+and inserts rows via the system ContentResolver.
+
+Data-type -> channel mapping:
+
+  contacts.vcf    -> APK inserts Contacts rows
+  calendar.ics    -> APK inserts Calendar events
+  reminders.ics   -> APK converts VTODO -> Calendar events
+  bookmarks.html  -> MTP (HUAWEI browser imports the HTML file itself)
+  notes.txt       -> MTP (dropped into Documents for the user)
 
 This module wraps the `adb` commands the Windows host runs:
   1. adb install the APK (once)
-  2. adb push contacts.vcf / calendar.ics
+  2. adb push contacts.vcf / calendar.ics / reminders.ics
   3. am broadcast ... to trigger import
+
+The adb binary and APK are bundled inside the exe (see core.write.vendor).
 """
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from core.write.vendor import find_adb, find_apk
 
 APK_PACKAGE = "com.phonemover.importer"
 IMPORT_ACTION = "com.phonemover.importer.IMPORT"
@@ -24,15 +35,12 @@ DEVICE_DIR = "/sdcard/PhoneMover"
 
 
 def _adb() -> str:
-    adb = shutil.which("adb")
-    if not adb:
-        raise RuntimeError("adb not found on PATH — install Android platform-tools")
-    return adb
+    return find_adb()
 
 
-def _run(*args: str) -> subprocess.CompletedProcess:
+def _run(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [_adb(), *args], capture_output=True, text=True, timeout=120
+        [_adb(), *args], capture_output=True, text=True, timeout=timeout
     )
 
 
@@ -43,9 +51,12 @@ class ImportResult:
     message: str = ""
 
 
-def install_apk(apk_path: str | Path) -> bool:
-    """Install the importer APK onto the connected device."""
-    apk = Path(apk_path)
+def install_apk(apk_path: str | Path | None = None) -> bool:
+    """Install the importer APK onto the connected device.
+
+    If ``apk_path`` is omitted, the bundled APK is used.
+    """
+    apk = Path(apk_path) if apk_path else find_apk()
     if not apk.exists():
         raise FileNotFoundError(f"APK not found: {apk}")
     proc = _run("install", "-r", str(apk))
@@ -54,7 +65,7 @@ def install_apk(apk_path: str | Path) -> bool:
 
 def push_and_import(
     local_file: str | Path,
-    data_type: str,  # "contacts" | "calendar"
+    data_type: str,  # "contacts" | "calendar" | "reminders"
     serial: Optional[str] = None,
 ) -> ImportResult:
     """Push a vCard/ICS file to the device and trigger import."""
@@ -114,3 +125,7 @@ def import_contacts(vcf_path: str | Path, serial: Optional[str] = None) -> Impor
 
 def import_calendar(ics_path: str | Path, serial: Optional[str] = None) -> ImportResult:
     return push_and_import(ics_path, "calendar", serial)
+
+
+def import_reminders(ics_path: str | Path, serial: Optional[str] = None) -> ImportResult:
+    return push_and_import(ics_path, "reminders", serial)

@@ -70,20 +70,20 @@ DATA_TYPES: dict[DataType, DataTypeInfo] = {
         "HomeDomain/Library/CallHistoryDB/CallHistory.storedata",
     ),
     DataType.NOTES: DataTypeInfo(
-        DataType.NOTES, "datatype.notes", "P1", False, "apk",
-        "HomeDomain/Library/Notes/NoteStore.sqlite",
+        DataType.NOTES, "datatype.notes", "P1", True, "apk",
+        "HomeDomain/Library/Notes/notes.sqlite",
     ),
     DataType.VOICE_MEMOS: DataTypeInfo(
         DataType.VOICE_MEMOS, "datatype.voice_memos", "P1", False, "mtp",
         "Media/Recordings",
     ),
     DataType.BOOKMARKS: DataTypeInfo(
-        DataType.BOOKMARKS, "datatype.bookmarks", "P1", False, "file",
+        DataType.BOOKMARKS, "datatype.bookmarks", "P1", True, "file",
         "HomeDomain/Library/Safari/Bookmarks.db",
     ),
     DataType.REMINDERS: DataTypeInfo(
-        DataType.REMINDERS, "datatype.reminders", "P2", False, "apk",
-        "HomeDomain/Library/Reminders/Reminders.sqlitedb",
+        DataType.REMINDERS, "datatype.reminders", "P2", True, "apk",
+        "AppDomainGroup-group.com.apple.reminders/Container_v1/Stores",
     ),
 }
 

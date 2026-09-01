@@ -54,12 +54,20 @@ public final class ImportReceiver extends BroadcastReceiver {
             type = "contacts";
         }
         if (TextUtils.isEmpty(path)) {
-            path = IMPORT_DIR + "/" + (type.equals("calendar") ? "calendar.ics" : "contacts.vcf");
+            if ("calendar".equals(type)) {
+                path = IMPORT_DIR + "/calendar.ics";
+            } else if ("reminders".equals(type)) {
+                path = IMPORT_DIR + "/reminders.ics";
+            } else {
+                path = IMPORT_DIR + "/contacts.vcf";
+            }
         }
 
         int count;
         if ("calendar".equals(type)) {
             count = importCalendar(context, new File(path));
+        } else if ("reminders".equals(type)) {
+            count = importReminders(context, new File(path));
         } else {
             count = importContacts(context, new File(path));
         }
@@ -219,6 +227,72 @@ public final class ImportReceiver extends BroadcastReceiver {
                 }
             } catch (Exception ignored) {
                 // Requires calendar write permission; skip if denied.
+            }
+        }
+        return count;
+    }
+
+    // -- Reminders --------------------------------------------------------
+
+    /**
+     * Import reminders from an .ics file containing VTODO entries.
+     *
+     * <p>The HUAWEI device has no public Reminders provider, so we convert
+     * each VTODO into a calendar event on the DUE date (or creation date if
+     * no due date). The original reminder title/notes are preserved as the
+     * event title/description, prefixed with "[Reminder]".
+     */
+    private int importReminders(Context context, File file) {
+        if (!file.exists()) {
+            return -1;
+        }
+        String ics = readFile(file);
+        if (ics == null) {
+            return -1;
+        }
+
+        ContentResolver resolver = context.getContentResolver();
+        String[] todos = ics.split("END:VTODO");
+        int count = 0;
+
+        for (String todo : todos) {
+            if (todo == null || !todo.contains("SUMMARY")) {
+                continue;
+            }
+            String summary = extractField(todo, "SUMMARY:");
+            if (TextUtils.isEmpty(summary)) {
+                continue;
+            }
+            String notes = extractField(todo, "DESCRIPTION:");
+
+            // Use DUE date if present, otherwise CREATED, otherwise now.
+            long due = parseIcsDate(todo, "DUE");
+            if (due <= 0) {
+                due = parseIcsDate(todo, "CREATED");
+            }
+            if (due <= 0) {
+                due = System.currentTimeMillis();
+            }
+            long end = due + 3600_000L; // 1h block
+
+            ContentValues values = new ContentValues();
+            values.put(CalendarContract.Events.CALENDAR_ID, defaultCalendarId(context));
+            values.put(CalendarContract.Events.TITLE, "[Reminder] " + summary);
+            values.put(CalendarContract.Events.DTSTART, due);
+            values.put(CalendarContract.Events.DTEND, end);
+            if (!TextUtils.isEmpty(notes)) {
+                values.put(CalendarContract.Events.DESCRIPTION, notes);
+            }
+            values.put(CalendarContract.Events.EVENT_TIMEZONE, "UTC");
+            values.put(CalendarContract.Events.ALL_DAY, 0);
+
+            try {
+                Uri uri = resolver.insert(CalendarContract.Events.CONTENT_URI, values);
+                if (uri != null) {
+                    count++;
+                }
+            } catch (Exception ignored) {
+                // skip on failure
             }
         }
         return count;

@@ -150,3 +150,4 @@ def write_ics(db_path: str | Path, out_path: str | Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8", newline="")
     return text.count("BEGIN:VEVENT")
+    return text.count("BEGIN:VEVENT")
