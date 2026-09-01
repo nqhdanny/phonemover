@@ -38,6 +38,7 @@ from core.__version__ import __version__
 from core.models import DATA_TYPES, DataType, v1_data_types
 from i18n import LANGUAGES, set_language, t
 
+from .splash import SplashScreen
 from .worker import BackupAndMigrateWorker, DeviceScanWorker
 
 # Data type -> i18n key
@@ -69,7 +70,7 @@ LOGO_PATH = _logo_path()
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self) -> None:
+    def __init__(self, initial_devices: list | None = None) -> None:
         super().__init__()
         self._worker: BackupAndMigrateWorker | None = None
         self._scan_worker: DeviceScanWorker | None = None
@@ -77,7 +78,14 @@ class MainWindow(QMainWindow):
         self._type_checks: dict[DataType, QCheckBox] = {}
         self._build_ui()
         self.setWindowTitle(t('app.title'))
-        self.resize(960, 640)
+        # If the splash thread already scanned devices, render that state
+        # immediately rather than showing "Scanning..." forever.
+        if initial_devices:
+            # Pre-scanned during splash — render the result directly.
+            self._on_scan_found(initial_devices)
+            self.refresh_btn.setEnabled(True)
+        else:
+            self._kick_scan()
 
     # -- UI construction ---------------------------------------------------
 
@@ -225,8 +233,9 @@ class MainWindow(QMainWindow):
 
     # -- slots -------------------------------------------------------------
 
-    def _on_refresh(self) -> None:
-        # Kick off device detection in the background.
+    def _kick_scan(self) -> None:
+        # Start the background device scanner. Used by _on_refresh and on
+        # first launch when no pre-scanned devices were supplied.
         self.device_label.setText(t('device.scanning'))
         self.refresh_btn.setEnabled(False)
         self._scan_worker = DeviceScanWorker(self)
@@ -235,6 +244,9 @@ class MainWindow(QMainWindow):
         self._scan_worker.error.connect(self._on_scan_error)
         self._scan_worker.finished.connect(self._on_scan_done)
         self._scan_worker.start()
+
+    def _on_refresh(self) -> None:
+        self._kick_scan()
 
     def _on_scan_found(self, devices) -> None:
         self._udid = devices[0].udid if devices and devices[0].udid else None
@@ -341,9 +353,46 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    """Show a splash, warm up heavy imports/scan on a background thread,
+    then fade the splash out and reveal the main window."""
     app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
+
+    splash = SplashScreen()
+    splash.show()
+    # Pump events so the splash paints before we do the heavy work.
+    app.processEvents()
+
+    # Warm-up work: pymobiledevice3 import + first device scan.
+    # Done off the UI thread so the splash keeps spinning smoothly.
+    from PySide6.QtCore import QThread, Signal
+    import time
+
+    class _WarmupWorker(QThread):
+        ready = Signal(object)  # list[IDevice]
+
+        def run(self) -> None:  # noqa: D102
+            try:
+                from core.device import list_iphones
+                devices = list_iphones()
+            except Exception as exc:  # noqa: BLE001
+                devices = []
+                print(f"warmup: device scan failed: {exc}")
+            self.ready.emit(devices)
+
+    warmup = _WarmupWorker()
+    devices_holder: list = []
+
+    def _on_ready(devs) -> None:
+        devices_holder.append(devs)
+        splash.set_status("Loading interface...")
+        # Build the main window now (heavy GUI construction).
+        window = MainWindow(devs)
+        window.resize(960, 640)
+        splash.finish(window)
+
+    warmup.ready.connect(_on_ready)
+    warmup.start()
+
     return app.exec()
 
 
