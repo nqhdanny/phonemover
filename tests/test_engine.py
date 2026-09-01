@@ -80,10 +80,13 @@ class TestEngine(unittest.TestCase):
             engine = MigrationEngine(backup, dest)
             result = engine.run([DataType.PHOTOS])
             self.assertTrue(result.ok)
-            photos = list((dest / "media" / "photos").glob("*"))
+            # Photos are now grouped into an album subfolder (fallback "Camera").
+            photos = list((dest / "media" / "photos").rglob("*"))
+            photos = [p for p in photos if p.is_file()]
             # only the .JPG photo, not the .MOV video
             self.assertEqual(len(photos), 1)
             self.assertTrue(photos[0].name.endswith(".JPG"))
+            self.assertEqual(photos[0].parent.name, "Camera")
 
     def test_migrate_videos(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,10 +95,13 @@ class TestEngine(unittest.TestCase):
             engine = MigrationEngine(backup, dest)
             result = engine.run([DataType.VIDEOS])
             self.assertTrue(result.ok)
-            videos = list((dest / "media" / "videos").glob("*"))
+            # Videos are grouped into a single "Video" subfolder.
+            videos = list((dest / "media" / "videos").rglob("*"))
+            videos = [v for v in videos if v.is_file()]
             # only the .MOV video, not the .JPG photo
             self.assertEqual(len(videos), 1)
             self.assertTrue(videos[0].name.endswith(".MOV"))
+            self.assertEqual(videos[0].parent.name, "Video")
 
     def test_missing_type_reports_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -120,6 +126,61 @@ class TestEngine(unittest.TestCase):
             engine = MigrationEngine(backup, dest, progress_cb=lambda p, s, m: events.append((p, s)))
             engine.run([DataType.CONTACTS])
             self.assertTrue(any(s == "migrated" for _, s in events))
+
+    def test_migrate_photos_preserves_albums(self):
+        """A backup with Photos.sqlite must group photos by album name."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backup = make_backup_with_albums(Path(tmp) / "backup")
+            dest = Path(tmp) / "out"
+            engine = MigrationEngine(backup, dest)
+            result = engine.run([DataType.PHOTOS])
+            self.assertTrue(result.ok)
+            photos_dir = dest / "media" / "photos"
+            # Two albums: "Camera" (camera roll) and "WhatsApp" (user album).
+            self.assertTrue((photos_dir / "Camera").is_dir())
+            self.assertTrue((photos_dir / "WhatsApp").is_dir())
+            camera_files = [p.name for p in (photos_dir / "Camera").iterdir()]
+            whatsapp_files = [p.name for p in (photos_dir / "WhatsApp").iterdir()]
+            self.assertIn("IMG_0001.JPG", camera_files)
+            self.assertIn("WA_0001.JPG", whatsapp_files)
+
+
+def make_backup_with_albums(root: Path) -> Path:
+    """Build a synthetic backup that includes a Photos.sqlite album mapping."""
+    root.mkdir(parents=True, exist_ok=True)
+
+    PHOTO1 = "cc00000000000000000000000000000000000001"  # camera roll
+    PHOTO2 = "cc00000000000000000000000000000000000002"  # WhatsApp album
+    PHOTOS_DB = "cc00000000000000000000000000000000000099"
+
+    _write_blob(root, PHOTO1, b"fakejpeg1")
+    _write_blob(root, PHOTO2, b"fakejpeg2")
+
+    # Photos.sqlite with ZGENERICALBUM + ZASSET + Z_33ASSETS.
+    photos_db = root / PHOTOS_DB[:2] / PHOTOS_DB
+    photos_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(photos_db))
+    conn.execute("CREATE TABLE ZGENERICALBUM (Z_PK INTEGER PRIMARY KEY, ZTITLE VARCHAR, ZKIND INTEGER)")
+    conn.execute("CREATE TABLE ZASSET (Z_PK INTEGER PRIMARY KEY, ZDIRECTORY VARCHAR, ZFILENAME VARCHAR)")
+    conn.execute("CREATE TABLE Z_33ASSETS (Z_33ALBUMS INTEGER, Z_3ASSETS INTEGER)")
+    # WhatsApp album (ZKIND=2)
+    conn.execute("INSERT INTO ZGENERICALBUM VALUES (50, 'WhatsApp', 2)")
+    # Two assets: camera roll + WhatsApp
+    conn.execute("INSERT INTO ZASSET VALUES (1, 'DCIM/100APPLE', 'IMG_0001.JPG')")
+    conn.execute("INSERT INTO ZASSET VALUES (2, 'PhotoData/CPLAssets/group1', 'WA_0001.JPG')")
+    # Link asset 2 -> WhatsApp album
+    conn.execute("INSERT INTO Z_33ASSETS VALUES (50, 2)")
+    conn.commit(); conn.close()
+
+    # Manifest.db maps both photos + Photos.sqlite.
+    mdb = root / "Manifest.db"
+    conn = sqlite3.connect(str(mdb))
+    conn.execute("CREATE TABLE Files (fileID TEXT, domain TEXT, relativePath TEXT, flags INTEGER, file BLOB)")
+    conn.execute("INSERT INTO Files VALUES (?, 'CameraRollDomain', 'Media/DCIM/100APPLE/IMG_0001.JPG', 1, NULL)", (PHOTO1,))
+    conn.execute("INSERT INTO Files VALUES (?, 'CameraRollDomain', 'Media/PhotoData/CPLAssets/group1/WA_0001.JPG', 1, NULL)", (PHOTO2,))
+    conn.execute("INSERT INTO Files VALUES (?, 'CameraRollDomain', 'Media/PhotoData/Photos.sqlite', 1, NULL)", (PHOTOS_DB,))
+    conn.commit(); conn.close()
+    return root
 
 
 if __name__ == "__main__":

@@ -201,17 +201,30 @@ def import_reminders(ics_path: str | Path, serial: Optional[str] = None) -> Impo
 # not provider rows). Instead we `adb push` them into the phone's public
 # media folders so the HUAWEI Gallery / Music apps pick them up:
 #
-#   photos  -> /sdcard/DCIM/Camera/
-#   videos  -> /sdcard/DCIM/Camera/   (Gallery shows both together)
-#   music   -> /sdcard/Music/
+#   photos/<album>/*  -> /sdcard/DCIM/<album>/*     (albums preserved)
+#   videos/Video/*    -> /sdcard/DCIM/Video/*       (separate video folder)
+#   music/*           -> /sdcard/Music/*
 #
 # This replaces the earlier MTP removable-drive approach, which was fragile
 # (drive letter detection) and never wired into the worker.
+#
+# The extractor (core.parse.photos) already writes photos grouped by album
+# (Camera, WhatsApp, Imported, ...) and videos into a single "Video" subfolder.
+# Here we map each local subfolder onto the device's DCIM/<album> directory so
+# the HUAWEI Gallery shows each album as its own album.
 
-# Local dir name (under dest_root/media/<name>) -> remote device dir.
+# Remote root directory per media kind. Photos/videos use DCIM and keep their
+# local subfolder (album) name as the remote subfolder; music is flat.
+MEDIA_REMOTE_ROOTS = {
+    "photos": "/sdcard/DCIM",
+    "videos": "/sdcard/DCIM",
+    "music": "/sdcard/Music",
+}
+
+# Backward-compatible alias (kept for any external importer).
 MEDIA_REMOTE_DIRS = {
     "photos": "/sdcard/DCIM/Camera",
-    "videos": "/sdcard/DCIM/Camera",
+    "videos": "/sdcard/DCIM/Video",
     "music": "/sdcard/Music",
 }
 
@@ -231,14 +244,18 @@ def push_media_dir(
     serial: Optional[str] = None,
     progress_cb: Optional[Callable[[int, str], None]] = None,
 ) -> MediaPushResult:
-    """Push every file in ``local_dir`` to the device's public media folder.
+    """Push media under ``local_dir`` to the device, preserving album subfolders.
 
-    ``kind`` selects the remote destination (photos/videos/music). Files are
-    pushed one at a time so progress can be reported; any per-file failure is
-    counted but does not abort the rest.
+    For ``photos`` and ``videos``, each subfolder of ``local_dir`` is an album
+    (e.g. ``Camera``, ``WhatsApp``, ``Video``) and is pushed to
+    ``/sdcard/DCIM/<subfolder>/`` so the HUAWEI Gallery shows each album
+    separately. ``music`` is pushed flat into ``/sdcard/Music/``.
+
+    Files are pushed one at a time so progress can be reported; any per-file
+    failure is counted but does not abort the rest.
     """
     src = Path(local_dir)
-    remote = MEDIA_REMOTE_DIRS.get(kind, "/sdcard/Download")
+    root_remote = MEDIA_REMOTE_ROOTS.get(kind, "/sdcard/Download")
 
     base = [_adb()]
     if serial:
@@ -247,17 +264,36 @@ def push_media_dir(
     if not src.is_dir():
         return MediaPushResult(True, kind, 0, 0, f"no {kind} to push (dir missing)")
 
-    files = sorted(f for f in src.iterdir() if f.is_file())
-    total = len(files)
+    # Flatten the local tree into (relative_subdir, file) pairs.
+    items: list[tuple[str, Path]] = []
+    if kind in ("photos", "videos"):
+        # Album-aware: walk subfolders, each subfolder = an album.
+        for sub in sorted(src.iterdir()):
+            if sub.is_dir():
+                for f in sorted(sub.iterdir()):
+                    if f.is_file():
+                        items.append((sub.name, f))
+            elif sub.is_file():
+                # A stray file at the top level goes into the kind root.
+                items.append(("", sub))
+    else:
+        # Music: flat.
+        for f in sorted(src.iterdir()):
+            if f.is_file():
+                items.append(("", f))
+
+    total = len(items)
     if total == 0:
         return MediaPushResult(True, kind, 0, 0, f"no {kind} files")
 
-    # Ensure the remote dir exists.
-    run_cmd(base + ["shell", "mkdir", "-p", remote], capture_output=True)
-
     pushed = 0
     failed = 0
-    for i, f in enumerate(files, start=1):
+    scanned_dirs: set[str] = set()
+    for i, (sub, f) in enumerate(items, start=1):
+        remote = f"{root_remote}/{sub}" if sub else root_remote
+        if remote not in scanned_dirs:
+            run_cmd(base + ["shell", "mkdir", "-p", remote], capture_output=True)
+            scanned_dirs.add(remote)
         proc = run_cmd(
             base + ["push", str(f), f"{remote}/{f.name}"],
             capture_output=True,
@@ -271,12 +307,12 @@ def push_media_dir(
         if progress_cb:
             progress_cb(int(i / total * 100), f"{kind} {i}/{total}")
 
-    # Trigger a media scan so the HUAWEI Gallery / Music apps index the newly
-    # pushed files. adb push writes files directly and does NOT update the
-    # MediaStore database, so without this the files are on disk but invisible
-    # in the gallery. The importer APK exposes a "scan" action that runs
-    # MediaScannerConnection.scanFile() over the whole directory.
-    _trigger_media_scan(base, remote)
+    # Trigger a media scan over the root so the HUAWEI Gallery / Music apps
+    # index every newly pushed album. adb push writes files directly and does
+    # NOT update the MediaStore database; without this the files are on disk
+    # but invisible in the gallery. The importer APK exposes a "scan" action
+    # that runs MediaScannerConnection.scanFile() over the whole directory.
+    _trigger_media_scan(base, root_remote)
 
     ok = failed == 0
     msg = f"{kind}: {pushed} pushed" + (f", {failed} failed" if failed else "")
