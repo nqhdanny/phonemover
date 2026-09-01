@@ -1,78 +1,115 @@
-"""Notes: read iOS notes.sqlite -> plain-text/markdown export.
+"""Notes: read iOS Notes database -> plain-text export.
 
-iOS 17+ Notes schema (verified against a real backup):
-  ZNOTE(Z_PK, ZTITLE, ZBODY, ZCREATIONDATE, ZMODIFICATIONDATE, ...)
-  ZNOTEBODY(Z_PK, ZNOTE, ZHTMLSTRING / ZTEXT / ZCONTENT, ...)
+iOS 17+ stores notes in a CoreData database whose schema changed from the
+legacy ``ZNOTE``/``ZNOTEBODY`` tables to:
 
-Notes are stored in the ZNOTE table. The body text lives in ZNOTEBODY,
-linked back to ZNOTE via the ZNOTE column (the note's Z_PK). Some iOS
-versions store the body inline or as an HTML string, so we try several
-body columns in order and strip basic HTML tags.
+  ZICCLOUDSYNCINGOBJECT  (single-table CoreData inheritance)
+      Z_ENT = 12          -> a note object
+      ZTITLE1              -> note title
+      ZSNIPPET             -> plain-text snippet (also used as body fallback)
+      ZWIDGETSNIPPET       -> widget snippet
+  ZICNOTEDATA
+      ZNOTE                -> FK to the note object's Z_PK
+      ZDATA                -> gzip/zlib-compressed NSAttributedString
 
-Dates are Apple/NSDate epoch seconds (2001-01-01 UTC).
+Two database locations exist across iOS versions:
+  * New (iOS 17+):  AppDomainGroup-group.com.apple.notes/NoteStore.sqlite
+  * Legacy:         HomeDomain/Library/Notes/notes.sqlite  (ZNOTE table)
 
-Export format: one note per Markdown file (``<title>.md``) so the HUAWEI
-side can import them individually, plus a ``notes.txt`` aggregate that the
-APK reads as a single batch (title + body separated by markers).
+We support both. For the new schema the title comes from ``ZTITLE1``; the body
+is decompressed from ``ZICNOTEDATA.ZDATA`` and the embedded UTF-8 text is
+extracted heuristically (the NSAttributedString archive is binary, but its
+NSString content is recoverable as readable runs). When no body is recoverable
+we fall back to ``ZSNIPPET``.
+
+Dates are Apple/NSDate epoch seconds (2001-01-01 UTC). The export is a single
+plain-text blob: one ``# title`` line then the body, blank-line separated.
 """
 
 from __future__ import annotations
 
-import html
+import gzip
 import re
 import sqlite3
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
-# Columns that may hold the note body, tried in priority order.
-_BODY_COLUMNS = ["ZHTMLSTRING", "ZTEXT", "ZCONTENT", "ZHTML"]
+# Legacy schema body columns (tried in order).
+_LEGACY_BODY_COLUMNS = ["ZHTMLSTRING", "ZTEXT", "ZCONTENT", "ZHTML"]
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _apple_to_datetime(seconds):
-    if seconds is None:
-        return None
-    try:
-        seconds = float(seconds)
-    except (TypeError, ValueError):
-        return None
-    return APPLE_EPOCH + timedelta(seconds=seconds)
+def _decompress(data: bytes) -> bytes:
+    """Decompress gzip (1f 8b) or zlib (78 9c/78 da) data."""
+    if not data:
+        return b""
+    if data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data)
+    if data[:2] in (b"\x78\x9c", b"\x78\xda", b"\x78\x01"):
+        return zlib.decompress(data)
+    return data
+
+
+def _extract_text(blob: bytes) -> str:
+    """Extract readable text runs from a decompressed NSAttributedString.
+
+    The binary NSAttributedString archive embeds the note's NSString content
+    near the start, followed by a dictionary of attributes (which looks like
+    noise: short numeric/hex runs, single letters, etc.). We keep only runs
+    that contain CJK or >=2 consecutive letters and drop short/numeric junk.
+    """
+    if not blob:
+        return ""
+    raw = _decompress(blob)
+    dec = raw.decode("utf-8", errors="ignore")
+
+    # Candidate runs: letters/digits/CJK + common punctuation/whitespace.
+    runs = re.findall(r"[\u4e00-\u9fffA-Za-z0-9][\u4e00-\u9fffA-Za-z0-9\s,\.\?!;:()\-'\"\u00e0-\u00ff]{1,}", dec)
+
+    kept: list[str] = []
+    for r in runs:
+        s = r.strip()
+        if not s:
+            continue
+        # Drop fragments with control chars (binary noise like "s\x1et").
+        if any(ord(ch) < 32 for ch in s):
+            continue
+        has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in s)
+        letters = sum(1 for ch in s if ch.isalpha())
+        digits = sum(1 for ch in s if ch.isdigit())
+        if has_cjk:
+            kept.append(s)
+        elif letters >= 2 and len(s) >= 2:
+            if digits and " " not in s and len(s) <= 6:
+                continue
+            kept.append(s)
+
+    return "\n".join(kept)
 
 
 def _strip_html(text: str) -> str:
     if not text:
         return ""
+    import html as _html
+
     text = _TAG_RE.sub("", text)
-    text = html.unescape(text)
-    return text.strip()
+    return _html.unescape(text).strip()
 
 
-def notes_to_text(db_path: str | Path) -> str:
-    """Export all notes as a single plain-text blob (title + body).
-
-    Each note is emitted as ``# title`` followed by the body; notes are
-    separated by a blank line. Returns the aggregate text.
-    """
-    db = Path(db_path)
-    if not db.exists():
-        raise FileNotFoundError(f"Notes database not found: {db}")
-
-    # Resolve body per note from ZNOTEBODY.
-    bodies: dict[int, str] = {}
-    with sqlite3.connect(str(db)) as conn:
-        try:
-            body_cols = [
-                c[1]
-                for c in conn.execute("PRAGMA table_info(ZNOTEBODY)").fetchall()
-            ]
-        except sqlite3.OperationalError:
-            body_cols = []
-
+def _read_legacy(db_path: Path) -> list[tuple[str, str]]:
+    """Read notes from the legacy ZNOTE/ZNOTEBODY schema."""
+    out: list[tuple[str, str]] = []
+    with sqlite3.connect(str(db_path)) as conn:
+        body_cols = [
+            c[1] for c in conn.execute("PRAGMA table_info(ZNOTEBODY)").fetchall()
+        ]
+        bodies: dict[int, str] = {}
         if body_cols:
-            use_col = next((c for c in _BODY_COLUMNS if c in body_cols), None)
+            use_col = next((c for c in _LEGACY_BODY_COLUMNS if c in body_cols), None)
             if use_col:
                 try:
                     for note_id, body in conn.execute(
@@ -83,32 +120,76 @@ def notes_to_text(db_path: str | Path) -> str:
                 except sqlite3.OperationalError:
                     pass
 
-        # Fall back to ZNOTE's own body column if present.
-        note_cols = [
-            c[1] for c in conn.execute("PRAGMA table_info(ZNOTE)").fetchall()
-        ]
-        inline_body = next((c for c in _BODY_COLUMNS if c in note_cols), None)
+        note_cols = [c[1] for c in conn.execute("PRAGMA table_info(ZNOTE)").fetchall()]
+        inline = next((c for c in _LEGACY_BODY_COLUMNS if c in note_cols), None)
+        try:
+            rows = conn.execute(
+                f"SELECT Z_PK, ZTITLE, {inline or 'NULL'} FROM ZNOTE ORDER BY Z_PK"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return out
 
-        rows = conn.execute(
-            "SELECT Z_PK, ZTITLE, ZCREATIONDATE, ZMODIFICATIONDATE, "
-            f"{inline_body or 'NULL'} FROM ZNOTE ORDER BY Z_PK"
-        ).fetchall()
+        for pk, title, inline_body in rows:
+            title = (title or "").strip()
+            body = bodies.get(int(pk), "") if pk is not None else ""
+            if inline_body and not body:
+                body = _strip_html(str(inline_body))
+            if title or body:
+                out.append((title or "Untitled", body))
+    return out
+
+
+def _read_new(db_path: Path) -> list[tuple[str, str]]:
+    """Read notes from the iOS 17+ ZICCLOUDSYNCINGOBJECT schema."""
+    out: list[tuple[str, str]] = []
+    with sqlite3.connect(str(db_path)) as conn:
+        bodies: dict[int, str] = {}
+        try:
+            for _pk, note_fk, zdata in conn.execute(
+                "SELECT Z_PK, ZNOTE, ZDATA FROM ZICNOTEDATA WHERE ZDATA IS NOT NULL"
+            ).fetchall():
+                if note_fk is None:
+                    continue
+                text = _extract_text(zdata) if zdata else ""
+                if text:
+                    bodies[int(note_fk)] = text
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            rows = conn.execute(
+                "SELECT Z_PK, ZTITLE1, ZSNIPPET FROM ZICCLOUDSYNCINGOBJECT "
+                "WHERE Z_ENT = 12 ORDER BY Z_PK"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return out
+
+        for pk, title, snippet in rows:
+            title = (title or "").strip()
+            body = bodies.get(int(pk), "") if pk is not None else ""
+            if not body and snippet:
+                body = str(snippet).strip()
+            if title or body:
+                out.append((title or "Untitled", body))
+    return out
+
+
+def notes_to_text(db_path: str | Path) -> str:
+    """Export all notes as one plain-text blob (``# title`` + body)."""
+    db = Path(db_path)
+    if not db.exists():
+        raise FileNotFoundError(f"Notes database not found: {db}")
+
+    notes = _read_new(db)
+    if not notes:
+        notes = _read_legacy(db)
 
     chunks: list[str] = []
-    for pk, title, created, modified, inline in rows:
-        title = (title or "").strip()
-        body = bodies.get(int(pk), "") if pk is not None else ""
-        if inline and not body:
-            body = _strip_html(str(inline))
-
-        if not title and not body:
-            continue
-
-        chunks.append(f"# {title}" if title else "# Untitled")
+    for title, body in notes:
+        chunks.append(f"# {title}")
         if body:
             chunks.append(body)
-        chunks.append("")  # blank line separator
-
+        chunks.append("")
     return "\n".join(chunks).rstrip() + "\n"
 
 

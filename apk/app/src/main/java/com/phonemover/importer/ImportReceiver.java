@@ -73,9 +73,12 @@ public final class ImportReceiver extends BroadcastReceiver {
         }
 
         // Report back to the host via the broadcast result.
+        // Use setResultData() so `am broadcast` prints the count line that
+        // the host parses; the Bundle extras are not echoed by default.
         Bundle result = new Bundle();
         result.putString("type", type);
         result.putInt("count", count);
+        setResultData(String.valueOf(count));
         setResult(count >= 0 ? Activity.RESULT_OK : Activity.RESULT_CANCELED, String.valueOf(count), result);
     }
 

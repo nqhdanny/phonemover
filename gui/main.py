@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.__version__ import __version__
+from core.logging_util import log
 from core.models import DATA_TYPES, DataType, v1_data_types
 from i18n import LANGUAGES, set_language, t
 
@@ -294,17 +295,19 @@ class MainWindow(QMainWindow):
         # the Windows Path('D:/foo').parent == 'D:' pitfall).
         dest_root = str(Path(backup_dir) / 'PhoneMover_out')
 
-        self._worker = BackupAndMigrateWorker(
+        # Start (or reuse) the log file in the backup folder.
+        log_path = log.setup(backup_dir)
+        log.info(f"=== transfer started === types={[dt.value for dt in selected]} "
+                 f"backup_dir={backup_dir} dest_root={dest_root} log={log_path}")
+
+        # Open the guided wizard, which runs the backup + migration + import
+        # in a background thread and walks the user through each step.
+        from .wizard import TransferWizard
+
+        wizard = TransferWizard(
             backup_dir, dest_root, selected, udid=self._udid, parent=self,
         )
-        self._worker.progress.connect(self._on_progress)
-        self._worker.finished_ok.connect(self._on_finished)
-        self._worker.failed.connect(self._on_failed)
-        self.start_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
-        self.progress.setValue(0)
-        self.status_label.setText(t('progress.backup'))
-        self._worker.start()
+        wizard.exec()
 
     def _on_cancel(self) -> None:
         if self._worker:
@@ -317,6 +320,7 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, percent: int, stage: str, message: str) -> None:
         self.progress.setValue(percent)
+        log.info(f"progress {percent}% stage={stage} msg={message}")
         if stage == 'backup':
             label = t('progress.backup')
         elif stage == 'migrate':
@@ -356,18 +360,25 @@ class MainWindow(QMainWindow):
 
         self.log_edit.setPlainText("\n".join(lines))
 
+        # Mirror the same summary into the log file.
+        for line in lines:
+            log.info(line)
+
         if result.ok:
             self.status_label.setText(t('progress.done'))
         else:
             self.status_label.setText(
                 t('result.summary', succeeded=result.succeeded, total=result.total)
             )
+        log.info(f"=== transfer finished === ok={result.ok} "
+                 f"({result.succeeded}/{result.total} types) log={log.path}")
         self._worker = None
 
     def _on_failed(self, message: str) -> None:
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.status_label.setText(t('progress.failed') + ': ' + message)
+        log.error(f"transfer failed: {message}")
         self._worker = None
 
 

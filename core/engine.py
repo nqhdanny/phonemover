@@ -130,9 +130,23 @@ class MigrationEngine:
         return TypeResult(DataType.MUSIC, ok, n, msg, out)
 
     def _migrate_notes(self) -> TypeResult:
-        db = self._resolve_db(DataType.NOTES)
-        if db is None or not db.exists():
-            return TypeResult(DataType.NOTES, False, 0, "notes.sqlite not found in backup")
+        # iOS 17+ stores notes in AppDomainGroup-group.com.apple.notes/NoteStore.sqlite;
+        # older iOS used HomeDomain/Library/Notes/notes.sqlite. Try both.
+        db = None
+        for domain, path in (
+            ("AppDomainGroup-group.com.apple.notes", "NoteStore.sqlite"),
+            ("HomeDomain", "Library/Notes/notes.sqlite"),
+        ):
+            entry = find_by_path(self.backup_root, path, domain=domain)
+            if entry is None:
+                entry = find_by_path(self.backup_root, path)
+            if entry is not None:
+                candidate = resolve_blob(self.backup_root, entry)
+                if candidate.is_file():
+                    db = candidate
+                    break
+        if db is None:
+            return TypeResult(DataType.NOTES, False, 0, "NoteStore.sqlite not found in backup")
         out = self.dest_root / "apk_assets" / "notes.txt"
         n = write_notes(db, out)
         ok = n > 0
