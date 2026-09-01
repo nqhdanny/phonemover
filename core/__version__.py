@@ -6,4 +6,4 @@ is consumed by:
   - Packager: baked into the Windows exe metadata
 """
 
-__version__ = "1.0.7"
+__version__ = "1.1.0"

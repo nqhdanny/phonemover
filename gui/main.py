@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -78,6 +78,8 @@ class MainWindow(QMainWindow):
         self._type_checks: dict[DataType, QCheckBox] = {}
         self._build_ui()
         self.setWindowTitle(t('app.title'))
+        # OS-level window icon: taskbar, title bar, Alt-Tab.
+        self.setWindowIcon(QIcon(str(LOGO_PATH)))
         # If the splash thread already scanned devices, render that state
         # immediately rather than showing "Scanning..." forever.
         if initial_devices:
@@ -355,17 +357,17 @@ class MainWindow(QMainWindow):
 def main() -> int:
     """Show a splash, warm up heavy imports/scan on a background thread,
     then fade the splash out and reveal the main window."""
+    import time
+
     app = QApplication(sys.argv)
 
     splash = SplashScreen()
     splash.show()
-    # Pump events so the splash paints before we do the heavy work.
     app.processEvents()
 
-    # Warm-up work: pymobiledevice3 import + first device scan.
-    # Done off the UI thread so the splash keeps spinning smoothly.
-    from PySide6.QtCore import QThread, Signal
-    import time
+    from PySide6.QtCore import QThread, QTimer, Signal
+
+    MIN_SPLASH_MS = 1500  # never flash past the user unnoticed
 
     class _WarmupWorker(QThread):
         ready = Signal(object)  # list[IDevice]
@@ -379,18 +381,25 @@ def main() -> int:
                 print(f"warmup: device scan failed: {exc}")
             self.ready.emit(devices)
 
+    warmup_start = time.monotonic()
     warmup = _WarmupWorker()
     devices_holder: list = []
 
-    def _on_ready(devs) -> None:
-        devices_holder.append(devs)
+    def _reveal(devs) -> None:
+        elapsed_ms = int((time.monotonic() - warmup_start) * 1000)
+        remaining = max(0, MIN_SPLASH_MS - elapsed_ms)
+        if remaining > 0:
+            QTimer.singleShot(remaining, lambda: _do_reveal(devs))
+        else:
+            _do_reveal(devs)
+
+    def _do_reveal(devs) -> None:
         splash.set_status("Loading interface...")
-        # Build the main window now (heavy GUI construction).
         window = MainWindow(devs)
         window.resize(960, 640)
         splash.finish(window)
 
-    warmup.ready.connect(_on_ready)
+    warmup.ready.connect(_reveal)
     warmup.start()
 
     return app.exec()
