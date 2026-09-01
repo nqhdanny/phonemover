@@ -144,6 +144,15 @@ class TestEngine(unittest.TestCase):
             self.assertIn("IMG_0001.JPG", camera_files)
             self.assertIn("WA_0001.JPG", whatsapp_files)
 
+            # date_taken is parsed from ZDATECREATED (CoreData 2001 epoch) so the
+            # writer can stamp EXIF DateTimeOriginal into converted JPEGs.
+            from core.parse.albums import build_album_map
+            amap = build_album_map(backup)
+            all_assets = [a for assets in amap.values() for a in assets]
+            by_name = {a.filename: a for a in all_assets}
+            self.assertEqual(by_name["IMG_0001.JPG"].date_taken, 700000000 + 978307200)
+            self.assertEqual(by_name["WA_0001.JPG"].date_taken, 710000000 + 978307200)
+
 
 def make_backup_with_albums(root: Path) -> Path:
     """Build a synthetic backup that includes a Photos.sqlite album mapping."""
@@ -161,13 +170,13 @@ def make_backup_with_albums(root: Path) -> Path:
     photos_db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(photos_db))
     conn.execute("CREATE TABLE ZGENERICALBUM (Z_PK INTEGER PRIMARY KEY, ZTITLE VARCHAR, ZKIND INTEGER)")
-    conn.execute("CREATE TABLE ZASSET (Z_PK INTEGER PRIMARY KEY, ZDIRECTORY VARCHAR, ZFILENAME VARCHAR)")
+    conn.execute("CREATE TABLE ZASSET (Z_PK INTEGER PRIMARY KEY, ZDIRECTORY VARCHAR, ZFILENAME VARCHAR, ZDATECREATED REAL)")
     conn.execute("CREATE TABLE Z_33ASSETS (Z_33ALBUMS INTEGER, Z_3ASSETS INTEGER)")
     # WhatsApp album (ZKIND=2)
     conn.execute("INSERT INTO ZGENERICALBUM VALUES (50, 'WhatsApp', 2)")
     # Two assets: camera roll + WhatsApp
-    conn.execute("INSERT INTO ZASSET VALUES (1, 'DCIM/100APPLE', 'IMG_0001.JPG')")
-    conn.execute("INSERT INTO ZASSET VALUES (2, 'PhotoData/CPLAssets/group1', 'WA_0001.JPG')")
+    conn.execute("INSERT INTO ZASSET VALUES (1, 'DCIM/100APPLE', 'IMG_0001.JPG', 700000000)")
+    conn.execute("INSERT INTO ZASSET VALUES (2, 'PhotoData/CPLAssets/group1', 'WA_0001.JPG', 710000000)")
     # Link asset 2 -> WhatsApp album
     conn.execute("INSERT INTO Z_33ASSETS VALUES (50, 2)")
     conn.commit(); conn.close()

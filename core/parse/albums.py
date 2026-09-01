@@ -50,6 +50,7 @@ class PhotoAsset:
     filename: str         # original filename (e.g. IMG_0004.HEIC)
     album: str            # destination album name (Camera or a user album)
     is_video: bool        # True for videos (suffix in VIDEO_SUFFIXES)
+    date_taken: int = 0   # Unix timestamp (seconds) of the capture time, 0 if unknown
 
 
 def _photos_sqlite_path(backup_root: str | Path) -> Optional[Path]:
@@ -92,15 +93,59 @@ def _load_album_membership(conn: sqlite3.Connection) -> dict[int, list[int]]:
     return members
 
 
-def _load_assets(conn: sqlite3.Connection) -> list[tuple[int, str, str]]:
-    """Return [(asset_Z_PK, ZDIRECTORY, ZFILENAME)] for every asset."""
+def _load_assets(conn: sqlite3.Connection) -> list[tuple[int, str, str, int]]:
+    """Return [(asset_Z_PK, ZDIRECTORY, ZFILENAME, date_taken_unix)] for every asset.
+
+    The capture time is read from ``ZASSET.ZDATECREATED`` (a CoreData timestamp
+    measured in seconds since 2001-01-01). It is converted to a Unix timestamp
+    (seconds since 1970-01-01) so the writer can stamp it into the JPEG EXIF —
+    the HUAWEI Gallery sorts its "Photos" timeline by EXIF DateTimeOriginal, and
+    without it converted photos are indexed with an empty ``date_taken`` and are
+    invisible in the timeline view.
+
+    Older/synthetic backups may lack the ``ZDATECREATED`` column; in that case
+    the capture time is simply 0 (unknown).
+    """
     try:
-        return conn.execute(
-            "SELECT Z_PK, ZDIRECTORY, ZFILENAME FROM ZASSET "
+        rows = conn.execute(
+            "SELECT Z_PK, ZDIRECTORY, ZFILENAME, ZDATECREATED FROM ZASSET "
             "WHERE ZFILENAME IS NOT NULL AND ZFILENAME != ''"
         ).fetchall()
     except sqlite3.OperationalError:
-        return []
+        # Fall back to the pre-date_taken schema (no ZDATECREATED column).
+        try:
+            rows = conn.execute(
+                "SELECT Z_PK, ZDIRECTORY, ZFILENAME, NULL FROM ZASSET "
+                "WHERE ZFILENAME IS NOT NULL AND ZFILENAME != ''"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    out: list[tuple[int, str, str, int]] = []
+    for pk, directory, filename, date_created in rows:
+        out.append((pk, directory, filename, _coredata_to_unix(date_created)))
+    return out
+
+
+# Seconds between the CoreData reference date (2001-01-01) and the Unix epoch
+# (1970-01-01). Apple's CoreData timestamps use the 2001 epoch.
+COREDATA_EPOCH_OFFSET = 978307200
+
+
+def _coredata_to_unix(value) -> int:
+    """Convert a CoreData timestamp (seconds since 2001-01-01) to Unix seconds.
+
+    Returns 0 when ``value`` is None, non-numeric, or out of a sane range
+    (e.g. pre-2000 or far future), so callers can treat 0 as "unknown".
+    """
+    try:
+        secs = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not (0 < secs < 4_000_000_000):  # ~year 2096 upper bound
+        return 0
+    unix = int(secs) + COREDATA_EPOCH_OFFSET
+    return unix if unix > 0 else 0
 
 
 def build_album_map(backup_root: str | Path) -> dict[str, list[PhotoAsset]]:
@@ -133,7 +178,7 @@ def build_album_map(backup_root: str | Path) -> dict[str, list[PhotoAsset]]:
         conn.close()
 
     result: dict[str, list[PhotoAsset]] = {}
-    for asset_pk, directory, filename in assets:
+    for asset_pk, directory, filename, date_taken in assets:
         # Only real originals live under DCIM/100APPLE or PhotoData/CPLAssets.
         directory = directory or ""
         if not (directory == CAMERA_ROLL_DIR or directory.startswith("PhotoData/CPLAssets/")):
@@ -160,6 +205,7 @@ def build_album_map(backup_root: str | Path) -> dict[str, list[PhotoAsset]]:
                 filename=filename,
                 album=album,
                 is_video=False,
+                date_taken=date_taken,
             )
         )
 

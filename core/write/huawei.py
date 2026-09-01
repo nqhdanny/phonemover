@@ -30,6 +30,7 @@ from core.write.adb_import import (
     import_contacts,
     import_reminders,
     install_apk,
+    push_document_file,
     push_media_dir,
 )
 
@@ -38,6 +39,13 @@ _APK_ASSETS = {
     "contacts.vcf": ("contacts", import_contacts),
     "calendar.ics": ("calendar", import_calendar),
     "reminders.ics": ("reminders", import_reminders),
+}
+
+# Plain files delivered into /sdcard/Documents (no provider import exists).
+# Each maps the apk_assets filename to the human-readable result type label.
+_DOCUMENT_ASSETS = {
+    "notes.txt": "notes",
+    "bookmarks.html": "bookmarks",
 }
 
 # Media dir name (under dest_root/media/<name>) -> adb push kind.
@@ -205,6 +213,24 @@ def migrate_to_huawei(
             except Exception as exc:  # noqa: BLE001
                 result.types.append({"type": kind, "ok": False, "count": 0, "message": str(exc)})
                 log.error(f"push media {kind} failed", exc)
+
+    # 5. Push plain documents (notes.txt, bookmarks.html) into Documents.
+    # These have no provider import; the HUAWEI Files app lists them under
+    # "Documents" for the user to open/import manually.
+    for name, label in _DOCUMENT_ASSETS.items():
+        local = assets / name
+        if not local.exists():
+            continue
+        report(96, f"pushing {label}")
+        try:
+            dres = push_document_file(local, serial=serial)
+            result.types.append(
+                {"type": label, "ok": dres.ok, "count": dres.pushed, "message": dres.message}
+            )
+            log.info(f"push document {label}: ok={dres.ok} msg={dres.message}")
+        except Exception as exc:  # noqa: BLE001
+            result.types.append({"type": label, "ok": False, "count": 0, "message": str(exc)})
+            log.error(f"push document {label} failed", exc)
 
     report(95, "import complete")
     if result.types and any(not t["ok"] for t in result.types):

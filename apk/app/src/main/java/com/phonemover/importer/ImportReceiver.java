@@ -145,14 +145,17 @@ public final class ImportReceiver extends BroadcastReceiver {
         if (dir == null || !dir.exists() || !dir.isDirectory()) {
             return -1;
         }
-        File[] children = dir.listFiles();
-        if (children == null) {
+        // Recursively collect every *file* under the directory. Photos/videos
+        // are pushed into album subfolders (DCIM/Camera, DCIM/WhatsApp, ...),
+        // and MediaScannerConnection.scanFile() must be handed file paths (it
+        // does not reliably recurse into directories on HUAWEI/EMUI).
+        java.util.List<String> fileList = new java.util.ArrayList<>();
+        collectFiles(dir, fileList);
+
+        if (fileList.isEmpty()) {
             return 0;
         }
-        String[] paths = new String[children.length];
-        for (int i = 0; i < children.length; i++) {
-            paths[i] = children[i].getAbsolutePath();
-        }
+        final String[] paths = fileList.toArray(new String[0]);
 
         // MediaScannerConnection.scanFile() is asynchronous: it schedules the
         // scan on a background thread and returns immediately. The gallery will
@@ -170,6 +173,20 @@ public final class ImportReceiver extends BroadcastReceiver {
                     }
                 });
         return paths.length;
+    }
+
+    private static void collectFiles(File dir, java.util.List<String> out) {
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File child : children) {
+            if (child.isDirectory()) {
+                collectFiles(child, out);
+            } else if (child.isFile()) {
+                out.add(child.getAbsolutePath());
+            }
+        }
     }
 
     // -- Contacts ---------------------------------------------------------

@@ -195,6 +195,54 @@ def import_reminders(ics_path: str | Path, serial: Optional[str] = None) -> Impo
     return push_and_import(ics_path, "reminders", serial)
 
 
+# -- Document push -------------------------------------------------------
+#
+# notes.txt and bookmarks.html are plain files the HUAWEI device cannot import
+# through a provider (there is no public API for the HUAWEI Notepad / Browser to
+# auto-import them). We `adb push` them into /sdcard/Documents so the user can
+# open them directly; the HUAWEI Files app lists them under "Documents".
+
+DOCUMENT_REMOTE_DIR = "/sdcard/Documents"
+
+
+@dataclass
+class DocumentPushResult:
+    ok: bool
+    name: str          # base filename (e.g. "notes.txt")
+    pushed: int = 0
+    message: str = ""
+
+
+def push_document_file(
+    local_file: str | Path,
+    serial: Optional[str] = None,
+) -> DocumentPushResult:
+    """Push a single text/html file into the device's Documents folder.
+
+    Returns a result describing whether the file was delivered. The file is not
+    auto-imported into any app (HUAWEI Notepad has no import API); it is made
+    available to the user under /sdcard/Documents.
+    """
+    local = Path(local_file)
+    if not local.exists():
+        return DocumentPushResult(False, local.name, 0, f"file not found: {local}")
+
+    base = [_adb()]
+    if serial:
+        base += ["-s", serial]
+
+    run_cmd(base + ["shell", "mkdir", "-p", DOCUMENT_REMOTE_DIR], capture_output=True)
+    proc = run_cmd(
+        base + ["push", str(local), f"{DOCUMENT_REMOTE_DIR}/{local.name}"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    ok = proc.returncode == 0
+    msg = f"{local.name}: pushed" if ok else (proc.stderr.strip() or f"push failed")
+    return DocumentPushResult(ok, local.name, 1 if ok else 0, msg)
+
+
 # -- Media push ----------------------------------------------------------
 #
 # Photos/videos/music can't go through the importer APK (they're binary files,

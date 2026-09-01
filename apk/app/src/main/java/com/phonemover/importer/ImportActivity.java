@@ -27,7 +27,7 @@ import java.io.File;
  */
 public final class ImportActivity extends Activity {
 
-    private static final String IMPORT_DIR = "/sdcard/PhoneMover";
+    private static final String IMPORT_DIR = "/data/local/tmp/PhoneMover";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {

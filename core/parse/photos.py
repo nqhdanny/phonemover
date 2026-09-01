@@ -17,6 +17,7 @@ videos). The HUAWEI side then maps those subfolders onto the device.
 
 from __future__ import annotations
 
+import datetime
 import shutil
 from pathlib import Path
 from typing import Callable, Optional
@@ -93,11 +94,11 @@ def extract_photos(
             if convert_heic and suffix in HEIC_SUFFIXES:
                 out_name = Path(asset.filename).with_suffix(".jpg").name
                 try:
-                    _convert_heic(src, album_dir / out_name)
+                    _convert_heic(src, album_dir / out_name, asset.date_taken)
                 except Exception:  # noqa: BLE001 - fall back to raw copy
                     shutil.copy2(src, album_dir / asset.filename)
             else:
-                shutil.copy2(src, album_dir / asset.filename)
+                _copy_with_exif(src, album_dir / asset.filename, asset.date_taken)
             copied += 1
             if progress_cb and (i % 50 == 0 or i == total):
                 progress_cb(int(i / total * 100) if total else 100, "photos {}/{}".format(i, total))
@@ -141,10 +142,97 @@ def extract_videos(
     return copied
 
 
-def _convert_heic(src: Path, dst: Path) -> None:
+def _convert_heic(src: Path, dst: Path, date_taken: int = 0) -> None:
+    """Convert a HEIC/HEIF image to JPEG, preserving the EXIF capture time.
+
+    The HUAWEI Gallery sorts its "Photos" timeline by EXIF ``DateTimeOriginal``
+    (MediaStore ``date_taken``). A plain ``Image.save(..., "JPEG")`` drops the
+    EXIF entirely, so converted photos end up with an empty capture time and are
+    invisible in the timeline view (even though the album/bucket view is fine).
+    We therefore carry over the HEIC's EXIF and, failing that, stamp the capture
+    time recorded in ``Photos.sqlite`` (``asset.date_taken``).
+    """
     from pillow_heif import register_heif_opener
     from PIL import Image
 
     register_heif_opener()
     with Image.open(src) as img:
-        img.convert("RGB").save(dst, "JPEG", quality=92)
+        exif = _build_exif(img.getexif(), date_taken)
+        rgb = img.convert("RGB")
+        if exif is not None:
+            rgb.save(dst, "JPEG", quality=92, exif=exif)
+        else:
+            rgb.save(dst, "JPEG", quality=92)
+
+
+def _copy_with_exif(src: Path, dst: Path, date_taken: int = 0) -> None:
+    """Copy a non-HEIC photo, stamping the capture time if the source lacks EXIF.
+
+    Some originals (e.g. screenshots saved as PNG, or images imported from apps)
+    carry no EXIF capture time. The HUAWEI Gallery still needs ``date_taken`` to
+    place them on the timeline, so when the source has no usable time we write a
+    fresh JPEG with the time from ``Photos.sqlite``. If neither is available the
+    file is copied verbatim.
+    """
+    suffix = Path(src).suffix.lower()
+    if suffix not in {".jpg", ".jpeg"}:
+        # Only JPEG carries the EXIF the gallery reads; leave other formats as-is.
+        shutil.copy2(src, dst)
+        return
+
+    try:
+        from PIL import Image
+        with Image.open(src) as img:
+            existing = img.getexif()
+            if _has_capture_time(existing):
+                shutil.copy2(src, dst)
+                return
+            exif = _build_exif(existing, date_taken)
+            if exif is not None:
+                img.convert("RGB").save(dst, "JPEG", quality=92, exif=exif)
+            else:
+                shutil.copy2(src, dst)
+    except Exception:  # noqa: BLE001 - best effort, fall back to raw copy
+        shutil.copy2(src, dst)
+
+
+def _build_exif(existing, date_taken: int = 0):
+    """Return a PIL ``Image.Exif`` carrying a capture time, or None.
+
+    Precedence: an existing ``DateTimeOriginal`` (36867) / ``DateTime`` (306) in
+    the source EXIF wins; otherwise the ``date_taken`` Unix timestamp (from
+    ``Photos.sqlite``) is formatted into ``DateTimeOriginal``. Returns None when
+    there is no capture time to write.
+    """
+    from PIL import Image
+
+    exif = existing if existing is not None else Image.Exif()
+    # Normalise to a mutable Image.Exif.
+    if not isinstance(exif, Image.Exif):
+        try:
+            exif = Image.Exif(exif)
+        except Exception:  # noqa: BLE001
+            exif = Image.Exif()
+
+    if _has_capture_time(exif):
+        return exif
+
+    if not date_taken:
+        return None
+
+    stamp = datetime.datetime.fromtimestamp(date_taken).strftime("%Y:%m:%d %H:%M:%S")
+    exif[36867] = stamp  # DateTimeOriginal
+    exif[306] = stamp     # DateTime
+    return exif
+
+
+def _has_capture_time(exif) -> bool:
+    """True when the EXIF object already carries a non-empty capture time."""
+    try:
+        for tag in (36867, 306):  # DateTimeOriginal, DateTime
+            val = exif.get(tag)
+            if val and str(val).strip():
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
