@@ -107,28 +107,30 @@ def push_and_import(
         timeout=120,
     )
 
-    # `am broadcast` output looks like:
-    #     Broadcasting: Intent { ... }
-    #     Broadcast completed: result=-1, data="867"
-    # (data= comes from BroadcastReceiver.setResultData(); -1 means RESULT_OK).
     out = (broadcast.stdout or "") + (broadcast.stderr or "")
-    if broadcast.returncode != 0 and "result=" not in out:
-        return ImportResult(False, 0, out.strip() or "am broadcast failed")
 
-    # Parse the count. Prefer the value of data="<n>" (set via setResultData);
-    # fall back to scanning for "data=<n>" without quotes.
+    # `am broadcast` sends a NON-ordered broadcast, so the receiver's
+    # setResultData()/setResult() never reach us. Instead the APK writes the
+    # count to /sdcard/PhoneMover/result_<type>.txt, which we read back.
     count = 0
-    import re as _re
-    m = _re.search(r'data="?(-?\d+)"?', out)
-    if m:
-        count = int(m.group(1))
+    result_file = f"{DEVICE_DIR}/result_{data_type}.txt"
+    raw_count = ""
+    for _attempt in range(5):  # brief retry in case the write lags the broadcast
+        cat = run_cmd(base + ["shell", "cat", result_file], capture_output=True, text=True, timeout=30)
+        raw_count = (cat.stdout or "").strip()
+        if raw_count:
+            break
+        import time as _time
+        _time.sleep(0.5)
+    if raw_count:
+        try:
+            count = int(raw_count)
+        except ValueError:
+            count = 0
 
-    # Sanity check: result=-1 means RESULT_OK, anything else is a failure.
-    result_m = _re.search(r"result=(-?\d+)", out)
-    if result_m and int(result_m.group(1)) != -1 and count == 0:
-        # Receiver returned RESULT_CANCELED (or threw) and we couldn't parse a
-        # count — surface the raw output so the user sees what happened.
-        return ImportResult(False, 0, out.strip())
+    # Success is determined by the count >= 0 (the APK writes -1 on error).
+    if count < 0:
+        return ImportResult(False, 0, out.strip() or f"import {data_type} failed")
 
     return ImportResult(True, count, out.strip())
 
@@ -221,6 +223,35 @@ def push_media_dir(
         if progress_cb:
             progress_cb(int(i / total * 100), f"{kind} {i}/{total}")
 
+    # Trigger a media scan so the HUAWEI Gallery / Music apps index the newly
+    # pushed files. adb push writes files directly and does NOT update the
+    # MediaStore database, so without this the files are on disk but invisible
+    # in the gallery. The importer APK exposes a "scan" broadcast that runs
+    # MediaScannerConnection.scanFile() over the whole directory.
+    _trigger_media_scan(base, remote)
+
     ok = failed == 0
     msg = f"{kind}: {pushed} pushed" + (f", {failed} failed" if failed else "")
     return MediaPushResult(ok, kind, pushed, failed, msg)
+
+
+def _trigger_media_scan(base: list[str], remote_dir: str) -> None:
+    """Ask the importer APK to index the pushed media directory.
+
+    Uses the APK's ``scan`` action, which calls
+    ``MediaScannerConnection.scanFile()`` on every file under ``remote_dir``.
+    This is far more reliable than the ``MEDIA_SCANNER_SCAN_FILE`` broadcast,
+    which modern Android/HUAWEI ignore for directory paths.
+    """
+    run_cmd(
+        base
+        + [
+            "shell", "am", "broadcast",
+            "-a", IMPORT_ACTION,
+            "--es", "type", "scan",
+            "--es", "path", remote_dir,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )

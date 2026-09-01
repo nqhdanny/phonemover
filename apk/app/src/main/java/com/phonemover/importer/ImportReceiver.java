@@ -1,6 +1,5 @@
 package com.phonemover.importer;
 
-import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.ContentProviderOperation;
 import android.content.ContentResolver;
@@ -8,7 +7,6 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
-import android.os.Bundle;
 import android.provider.CalendarContract;
 import android.provider.ContactsContract;
 import android.text.TextUtils;
@@ -64,7 +62,13 @@ public final class ImportReceiver extends BroadcastReceiver {
         }
 
         int count;
-        if ("calendar".equals(type)) {
+        if ("scan".equals(type)) {
+            // Media rescan: index a directory so the Gallery/Music apps see
+            // files pushed via adb. Returns the number of files scanned.
+            count = scanMedia(context, new File(path));
+            writeResult(type, count);
+            return;
+        } else if ("calendar".equals(type)) {
             count = importCalendar(context, new File(path));
         } else if ("reminders".equals(type)) {
             count = importReminders(context, new File(path));
@@ -72,14 +76,74 @@ public final class ImportReceiver extends BroadcastReceiver {
             count = importContacts(context, new File(path));
         }
 
-        // Report back to the host via the broadcast result.
-        // Use setResultData() so `am broadcast` prints the count line that
-        // the host parses; the Bundle extras are not echoed by default.
-        Bundle result = new Bundle();
-        result.putString("type", type);
-        result.putInt("count", count);
-        setResultData(String.valueOf(count));
-        setResult(count >= 0 ? Activity.RESULT_OK : Activity.RESULT_CANCELED, String.valueOf(count), result);
+        // `am broadcast` sends a NON-ordered broadcast, so setResultData() /
+        // setResult() have no effect and their value never reaches the host.
+        // Instead we write the count to a result file on /sdcard, which the
+        // host reads back via `adb shell cat`.
+        writeResult(type, count);
+    }
+
+    /**
+     * Write the import count to /sdcard/PhoneMover/result_<type>.txt so the
+     * host can read it back (the broadcast result channel is unavailable for
+     * non-ordered broadcasts).
+     */
+    private void writeResult(String type, int count) {
+        File dir = new File(IMPORT_DIR);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        File out = new File(dir, "result_" + type + ".txt");
+        try {
+            java.io.FileWriter w = new java.io.FileWriter(out);
+            w.write(String.valueOf(count));
+            w.close();
+        } catch (Exception ignored) {
+            // Best effort: if we can't write the result file, the host will
+            // report 0, but the actual import may still have succeeded.
+        }
+    }
+
+    // -- Media scan -------------------------------------------------------
+
+    /**
+     * Index every file under {@code dir} into the MediaStore so the Gallery /
+     * Music apps display files that were pushed via adb.
+     *
+     * <p>adb push writes files directly and does not trigger a media scan, so
+     * without this the files exist on disk but are invisible in the gallery.
+     * We use MediaScannerConnection.scanFile() (the public API) over the whole
+     * directory, which is reliable on HUAWEI/EMUI.
+     */
+    private int scanMedia(Context context, File dir) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) {
+            return -1;
+        }
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return 0;
+        }
+        String[] paths = new String[children.length];
+        for (int i = 0; i < children.length; i++) {
+            paths[i] = children[i].getAbsolutePath();
+        }
+
+        // MediaScannerConnection.scanFile() is asynchronous: it schedules the
+        // scan on a background thread and returns immediately. The gallery will
+        // show the files once scanning completes (usually within seconds). We
+        // report the file count immediately; the actual indexing finishes in
+        // the background.
+        android.media.MediaScannerConnection.scanFile(
+                context,
+                paths,
+                null,
+                new android.media.MediaScannerConnection.OnScanCompletedListener() {
+                    @Override
+                    public void onScanCompleted(String path, android.net.Uri uri) {
+                        // No-op: the scan result is reflected in the gallery.
+                    }
+                });
+        return paths.length;
     }
 
     // -- Contacts ---------------------------------------------------------
