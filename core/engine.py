@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from core.backup import BackupResult, backup_full
-from core.manifest import find_by_path
+from core.manifest import find_by_path, resolve_blob
 from core.models import DATA_TYPES, DataType
 from core.parse.calendar import write_ics
 from core.parse.contacts import write_vcards
@@ -79,7 +79,7 @@ class MigrationEngine:
         if entry is None:
             # Fall back: try domain-less lookup.
             entry = find_by_path(self.backup_root, path)
-        return (self.backup_root / entry.file_id) if entry else None
+        return resolve_blob(self.backup_root, entry) if entry else None
 
     # -- per-type handlers --------------------------------------------------
 
@@ -133,7 +133,7 @@ class MigrationEngine:
         dest_dir.mkdir(parents=True, exist_ok=True)
         copied = 0
         for i, e in enumerate(entries, start=1):
-            src = self.backup_root / e.file_id
+            src = resolve_blob(self.backup_root, e)
             if not src.is_file():
                 continue
             suffix = Path(e.relative_path).suffix

@@ -9,12 +9,25 @@ from core.engine import MigrationEngine
 from core.models import DataType
 
 
+def _write_blob(root: Path, fid: str, data: bytes) -> None:
+    """Write a blob using the sharded iOS layout: <root>/<fid[:2]>/<fid>."""
+    blob = root / fid[:2] / fid
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(data)
+
+
 def make_backup(root: Path) -> Path:
-    """Build a minimal backup with AddressBook + Calendar + a media file."""
+    """Build a minimal sharded backup with AddressBook + Calendar + media."""
     root.mkdir(parents=True, exist_ok=True)
 
-    # AddressBook.sqlitedb (blob: 'ABDB')
-    ab = root / "ABDB"
+    AB = "31bb7ba8914766d4ba40d6dfb6113c8b614be442"
+    CAL = "2041457d5fe04d39d0ab481178355df6781e6858"
+    PHOTO = "aa00000000000000000000000000000000000001"
+    VIDEO = "bb00000000000000000000000000000000000002"
+
+    # AddressBook.sqlitedb
+    ab = root / AB[:2] / AB
+    ab.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(ab))
     conn.execute("CREATE TABLE ABPerson (ROWID INTEGER, First TEXT, Last TEXT, MiddleName TEXT, Organization TEXT, Department TEXT, Nickname TEXT, Note TEXT)")
     conn.execute("CREATE TABLE ABMultiValue (UID INTEGER, record_id INTEGER, property INTEGER, identifier INTEGER, label INTEGER, value TEXT)")
@@ -24,25 +37,26 @@ def make_backup(root: Path) -> Path:
     conn.execute("INSERT INTO ABMultiValueLabel VALUES (100, 'mobile', '$!<Mobile>!$')")
     conn.commit(); conn.close()
 
-    # Calendar.sqlitedb (blob: 'CALDB')
-    cal = root / "CALDB"
+    # Calendar.sqlitedb
+    cal = root / CAL[:2] / CAL
+    cal.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(cal))
     conn.execute("CREATE TABLE CalendarItem (ROWID INTEGER, summary TEXT, location TEXT, start_date REAL, end_date REAL, all_day INTEGER, calendar_id INTEGER, notes TEXT)")
     conn.execute("INSERT INTO CalendarItem VALUES (1, 'Sync', NULL, 0, 3600, 0, NULL, NULL)")
     conn.commit(); conn.close()
 
-    # Media files (blobs: 'MEDIA1' photo, 'MEDIA2' video)
-    (root / "MEDIA1").write_bytes(b"fakejpeg")
-    (root / "MEDIA2").write_bytes(b"fakevideo")
+    # Media files (sharded layout)
+    _write_blob(root, PHOTO, b"fakejpeg")
+    _write_blob(root, VIDEO, b"fakevideo")
 
-    # Manifest.db
+    # Manifest.db (flat, in root)
     mdb = root / "Manifest.db"
     conn = sqlite3.connect(str(mdb))
     conn.execute("CREATE TABLE Files (fileID TEXT, domain TEXT, relativePath TEXT, flags INTEGER, file BLOB)")
-    conn.execute("INSERT INTO Files VALUES ('ABDB', 'HomeDomain', 'Library/AddressBook/AddressBook.sqlitedb', 1, NULL)")
-    conn.execute("INSERT INTO Files VALUES ('CALDB', 'HomeDomain', 'Library/Calendar/Calendar.sqlitedb', 1, NULL)")
-    conn.execute("INSERT INTO Files VALUES ('MEDIA1', 'CameraRollDomain', '100APPLE/IMG_0001.JPG', 2, NULL)")
-    conn.execute("INSERT INTO Files VALUES ('MEDIA2', 'CameraRollDomain', '100APPLE/IMG_0002.MOV', 2, NULL)")
+    conn.execute("INSERT INTO Files VALUES (?, 'HomeDomain', 'Library/AddressBook/AddressBook.sqlitedb', 1, NULL)", (AB,))
+    conn.execute("INSERT INTO Files VALUES (?, 'HomeDomain', 'Library/Calendar/Calendar.sqlitedb', 1, NULL)", (CAL,))
+    conn.execute("INSERT INTO Files VALUES (?, 'CameraRollDomain', '100APPLE/IMG_0001.JPG', 2, NULL)", (PHOTO,))
+    conn.execute("INSERT INTO Files VALUES (?, 'CameraRollDomain', '100APPLE/IMG_0002.MOV', 2, NULL)", (VIDEO,))
     conn.commit(); conn.close()
     return root
 

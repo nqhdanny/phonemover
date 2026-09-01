@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, Optional
 
-from core.manifest import find_by_domain
+from core.manifest import find_by_domain, blob_path
 
 # The domain where the camera roll lives in a real backup.
 CAMERA_ROLL_DOMAIN = "CameraRollDomain"
@@ -69,7 +69,7 @@ def extract_photos(
     copied = 0
 
     for i, (file_id, rel) in enumerate(files, start=1):
-        src = root / file_id
+        src = blob_path(root, file_id)
         if not src.is_file():
             continue
         suffix = Path(rel).suffix.lower()
@@ -106,7 +106,7 @@ def extract_videos(
     copied = 0
 
     for i, (file_id, rel) in enumerate(files, start=1):
-        src = root / file_id
+        src = blob_path(root, file_id)
         if not src.is_file():
             continue
         suffix = Path(rel).suffix.lower()
