@@ -12,29 +12,30 @@ APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
 
 def make_calendar(path: Path) -> Path:
+    """Build a calendar matching the real iOS 17+ schema."""
     conn = sqlite3.connect(str(path))
-    conn.execute(
-        "CREATE TABLE Calendar (ROWID INTEGER, title TEXT, color TEXT)"
-    )
+    conn.execute("CREATE TABLE Calendar (ROWID INTEGER, title TEXT, color TEXT)")
     conn.execute(
         """
         CREATE TABLE CalendarItem (
-            ROWID INTEGER, summary TEXT, location TEXT, start_date REAL,
-            end_date REAL, all_day INTEGER, calendar_id INTEGER, notes TEXT
+            ROWID INTEGER, summary TEXT, location_id INTEGER, description TEXT,
+            start_date REAL, end_date REAL, all_day INTEGER, calendar_id INTEGER
         )
         """
     )
+    conn.execute("CREATE TABLE Location (ROWID INTEGER, title TEXT, address TEXT)")
     conn.execute("INSERT INTO Calendar VALUES (1, 'Work', NULL)")
+    conn.execute("INSERT INTO Location VALUES (1, 'Room 4', NULL)")
     start = (APPLE_EPOCH + timedelta(hours=9)).timestamp() - APPLE_EPOCH.timestamp()
     end = start + 3600
     conn.execute(
-        "INSERT INTO CalendarItem VALUES (100, 'Team sync', 'Room 4', ?, ?, 0, 1, 'weekly')",
+        "INSERT INTO CalendarItem VALUES (100, 'Team sync', 1, 'weekly', ?, ?, 0, 1)",
         (start, end),
     )
     # all-day event
     all_start = (APPLE_EPOCH + timedelta(days=5)).timestamp() - APPLE_EPOCH.timestamp()
     conn.execute(
-        "INSERT INTO CalendarItem VALUES (101, 'Holiday', NULL, ?, NULL, 1, NULL, NULL)",
+        "INSERT INTO CalendarItem VALUES (101, 'Holiday', NULL, NULL, ?, NULL, 1, NULL)",
         (all_start,),
     )
     conn.commit()

@@ -9,17 +9,19 @@ from core.parse.contacts import contacts_to_vcard
 
 
 def make_addressbook(path: Path) -> Path:
+    """Build an address book matching the real iOS 17+ schema."""
     conn = sqlite3.connect(str(path))
-    conn.execute("CREATE TABLE ABPerson (ROWID INTEGER, First TEXT, Last TEXT, MiddleName TEXT, Organization TEXT, Department TEXT, Nickname TEXT, Note TEXT)")
+    conn.execute("CREATE TABLE ABPerson (ROWID INTEGER, First TEXT, Last TEXT, Middle TEXT, Organization TEXT, Department TEXT, Nickname TEXT, Note TEXT)")
     conn.execute("CREATE TABLE ABMultiValue (UID INTEGER, record_id INTEGER, property INTEGER, identifier INTEGER, label INTEGER, value TEXT)")
-    conn.execute("CREATE TABLE ABMultiValueLabel (UID INTEGER, label TEXT, value TEXT)")
+    # Real schema: single TEXT column, label is a 1-based rowid index.
+    conn.execute("CREATE TABLE ABMultiValueLabel (value TEXT)")
     conn.execute(
         "INSERT INTO ABPerson VALUES (1, 'Ivan', 'Petrov', '', 'ACME', 'Engineer', 'iva', 'test note')"
     )
-    conn.execute("INSERT INTO ABMultiValue VALUES (10, 1, 3, 0, 100, '+7 900 123-45-67')")
-    conn.execute("INSERT INTO ABMultiValue VALUES (11, 1, 4, 0, 101, 'ivan@example.com')")
-    conn.execute("INSERT INTO ABMultiValueLabel VALUES (100, 'mobile', '$!<Mobile>!$')")
-    conn.execute("INSERT INTO ABMultiValueLabel VALUES (101, 'home', '$!<Home>!$')")
+    conn.execute("INSERT INTO ABMultiValue VALUES (10, 1, 3, 0, 1, '+7 900 123-45-67')")
+    conn.execute("INSERT INTO ABMultiValue VALUES (11, 1, 4, 0, 2, 'ivan@example.com')")
+    conn.execute("INSERT INTO ABMultiValueLabel VALUES ('_$!<Mobile>!$_')")
+    conn.execute("INSERT INTO ABMultiValueLabel VALUES ('_$!<Home>!$_')")
     conn.commit()
     conn.close()
     return path

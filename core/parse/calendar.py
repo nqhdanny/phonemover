@@ -1,9 +1,11 @@
 """Calendar: read iOS Calendar.sqlitedb -> .ics (iCalendar 2.0).
 
-iOS Calendar schema (stable across iOS 10+):
-  CalendarItem(ROWID, summary, location, start_date, end_date, all_day,
-               calendar_id, notes, ...)
-  Calendar(ROWID, title, color, ...)
+iOS 17+ calendar schema (verified against a real backup):
+  CalendarItem(ROWID, summary, location_id, description, start_date,
+               end_date, all_day, calendar_id, ...)
+    # NOTE: notes -> description; location is a FK (location_id) into Location
+  Calendar(ROWID, store_id, title, ...)
+  Location(ROWID, title, address, ...)
 
 Dates are stored as seconds since 2001-01-01 (Apple/NSDate epoch); UTC is
 assumed for the .ics DTSTAMP/DTSTART/DTEND. All-day events use DTSTART;VALUE=DATE.
@@ -14,13 +16,12 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Optional
 
 # Apple NSDate epoch: 2001-01-01 00:00:00 UTC
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
 
-def _apple_to_datetime(seconds: Optional[float]) -> Optional[datetime]:
+def _apple_to_datetime(seconds) -> datetime | None:
     if seconds is None:
         return None
     try:
@@ -30,7 +31,7 @@ def _apple_to_datetime(seconds: Optional[float]) -> Optional[datetime]:
     return APPLE_EPOCH + timedelta(seconds=seconds)
 
 
-def _format_dt(dt: Optional[datetime]) -> str:
+def _format_dt(dt) -> str:
     """Format as iCalendar UTC datetime (YYYYMMDDTHHMMSSZ)."""
     if dt is None:
         return ""
@@ -38,13 +39,15 @@ def _format_dt(dt: Optional[datetime]) -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-def _format_date(dt: Optional[datetime]) -> str:
+
+def _format_date(dt) -> str:
     """Format as iCalendar DATE (YYYYMMDD) for all-day events."""
     if dt is None:
         return ""
     return dt.strftime("%Y%m%d")
 
-def _esc(text: Optional[str]) -> str:
+
+def _esc(text) -> str:
     """Escape a text value for iCalendar content lines."""
     if not text:
         return ""
@@ -71,7 +74,7 @@ def calendar_to_ics(db_path: str | Path) -> str:
     ]
 
     with sqlite3.connect(str(db)) as conn:
-        # Resolve calendar titles (optional column, tolerate missing schema).
+        # Resolve calendar titles (optional, tolerate missing schema).
         cal_names: dict[int, str] = {}
         try:
             for rowid, title in conn.execute(
@@ -82,11 +85,22 @@ def calendar_to_ics(db_path: str | Path) -> str:
         except sqlite3.OperationalError:
             pass
 
+        # Resolve location titles via location_id -> Location(ROWID, title).
+        loc_names: dict[int, str] = {}
+        try:
+            for rowid, title in conn.execute(
+                "SELECT ROWID, title FROM Location"
+            ).fetchall():
+                if title:
+                    loc_names[rowid] = str(title)
+        except sqlite3.OperationalError:
+            pass
+
         try:
             rows = conn.execute(
                 """
-                SELECT ROWID, summary, location, start_date, end_date,
-                       all_day, calendar_id, notes
+                SELECT ROWID, summary, location_id, description, start_date,
+                       end_date, all_day, calendar_id
                 FROM CalendarItem
                 ORDER BY start_date
                 """
@@ -95,7 +109,7 @@ def calendar_to_ics(db_path: str | Path) -> str:
             # Some backups omit the table entirely.
             rows = []
 
-        for rowid, summary, location, start, end, all_day, cal_id, notes in rows:
+        for rowid, summary, loc_id, description, start, end, all_day, cal_id in rows:
             start_dt = _apple_to_datetime(start)
             end_dt = _apple_to_datetime(end)
             if start_dt is None:
@@ -107,7 +121,6 @@ def calendar_to_ics(db_path: str | Path) -> str:
 
             if all_day:
                 lines.append(f"DTSTART;VALUE=DATE:{_format_date(start_dt)}")
-                # iCalendar all-day end is exclusive; clamp to start+1d.
                 end_dt = end_dt or (start_dt + timedelta(days=1))
                 lines.append(f"DTEND;VALUE=DATE:{_format_date(end_dt)}")
             else:
@@ -116,10 +129,12 @@ def calendar_to_ics(db_path: str | Path) -> str:
                     lines.append(f"DTEND:{_format_dt(end_dt)}")
 
             lines.append(f"SUMMARY:{_esc(summary)}")
-            if location:
-                lines.append(f"LOCATION:{_esc(location)}")
-            if notes:
-                lines.append(f"DESCRIPTION:{_esc(notes)}")
+            # location_id -> Location title
+            loc_title = loc_names.get(loc_id) if loc_id else None
+            if loc_title:
+                lines.append(f"LOCATION:{_esc(loc_title)}")
+            if description:
+                lines.append(f"DESCRIPTION:{_esc(description)}")
             if cal_id in cal_names:
                 lines.append(f"CATEGORIES:{_esc(cal_names[cal_id])}")
             lines.append("END:VEVENT")

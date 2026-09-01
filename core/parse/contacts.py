@@ -1,35 +1,58 @@
 """Contacts: read iOS AddressBook.sqlitedb -> vCard 3.0 text.
 
-iOS address book schema (stable across iOS 10+):
-  ABPerson(ROWID, First, Last, MiddleName, Organization, Department, ...)
-  ABMultiValue(UID, record_id, property, identifier, label, value)
-  ABMultiValueLabel(UID, label, value)
+iOS 17+ address book schema (verified against a real backup):
+  ABPerson(ROWID, First, Last, Middle, Organization, Department,
+           Nickname, Note, ...)          # NOTE: column is `Middle`, not `MiddleName`
+  ABMultiValue(UID, record_id, property, identifier, label, value, guid)
+  ABMultiValueLabel(value)               # single TEXT column; `label` in
+                                          # ABMultiValue is a 1-based rowid
+                                          # index into this table
 
-property codes: 3 = phone, 4 = email, 6 = url, 5 = date (simplified here).
+property codes: 3 = phone, 4 = email, 5 = date, 6 = url, etc.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Iterable, Optional
 
 # property code -> vCard field
 _PROPERTY_TO_VCARD = {3: "TEL", 4: "EMAIL", 6: "URL"}
 
-# Common iOS label values already readable; unknown labels pass through.
+# Known label values -> vCard TYPE.
 _LABEL_VALUE_TO_TYPE = {
     "$!<Mobile>!$": "CELL",
+    "_$!<Mobile>!$_": "CELL",
     "$!<Home>!$": "HOME",
+    "_$!<Home>!$_": "HOME",
     "$!<Work>!$": "WORK",
+    "_$!<Work>!$_": "WORK",
     "$!<Other>!$": "OTHER",
+    "_$!<Other>!$_": "OTHER",
     "home": "HOME",
     "work": "WORK",
+    "mobile": "CELL",
+    "手机": "CELL",
+    "住宅": "HOME",
 }
+
+
+def _load_labels(conn: sqlite3.Connection) -> dict[int, str]:
+    """Return {rowid: value} for ABMultiValueLabel (1-based index)."""
+    out: dict[int, str] = {}
+    try:
+        for rowid, value in conn.execute(
+            "SELECT rowid, value FROM ABMultiValueLabel"
+        ).fetchall():
+            out[int(rowid)] = value or ""
+    except sqlite3.OperationalError:
+        pass
+    return out
 
 
 def _read_multi_values(conn: sqlite3.Connection) -> dict[int, list[tuple[int, str, str]]]:
     """record_id -> list of (property, label_value, value)."""
+    labels = _load_labels(conn)
     out: dict[int, list[tuple[int, str, str]]] = {}
     try:
         rows = conn.execute(
@@ -37,18 +60,14 @@ def _read_multi_values(conn: sqlite3.Connection) -> dict[int, list[tuple[int, st
         ).fetchall()
     except sqlite3.OperationalError:
         return out
+
     for record_id, prop, label, value in rows:
-        # resolve label code -> value via ABMultiValueLabel when possible
-        label_val = label or ""
+        # Resolve numeric label (rowid index into ABMultiValueLabel).
+        label_val = ""
         if isinstance(label, int) or (isinstance(label, str) and label.isdigit()):
-            try:
-                lab = conn.execute(
-                    "SELECT value FROM ABMultiValueLabel WHERE UID = ?", (int(label),)
-                ).fetchone()
-                if lab:
-                    label_val = lab[0]
-            except sqlite3.OperationalError:
-                pass
+            label_val = labels.get(int(label), "")
+        else:
+            label_val = label or ""
         out.setdefault(record_id, []).append((int(prop), label_val, value or ""))
     return out
 
@@ -56,9 +75,14 @@ def _read_multi_values(conn: sqlite3.Connection) -> dict[int, list[tuple[int, st
 def _vcard_type(label: str) -> str:
     if not label:
         return "VOICE"
+    # Normalize iOS wrapping like "_$!<Mobile>!$_" or "$!<Mobile>!$".
+    key = label
+    if key in _LABEL_VALUE_TO_TYPE:
+        return _LABEL_VALUE_TO_TYPE[key]
     if label.startswith("$!<") and label.endswith("!$"):
-        inner = label[3:-3]
-        return _LABEL_VALUE_TO_TYPE.get(label, inner.upper())
+        return label[3:-3].upper()
+    if label.startswith("_$!<") and label.endswith("!$_"):
+        return label[4:-4].upper()
     return _LABEL_VALUE_TO_TYPE.get(label.lower(), "OTHER")
 
 
@@ -72,7 +96,7 @@ def contacts_to_vcard(db_path: str | Path) -> str:
     with sqlite3.connect(str(db)) as conn:
         rows = conn.execute(
             """
-            SELECT ROWID, First, Last, MiddleName, Organization, Department, Nickname, Note
+            SELECT ROWID, First, Last, Middle, Organization, Department, Nickname, Note
             FROM ABPerson
             """
         ).fetchall()

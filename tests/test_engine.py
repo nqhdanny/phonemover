@@ -25,24 +25,24 @@ def make_backup(root: Path) -> Path:
     PHOTO = "aa00000000000000000000000000000000000001"
     VIDEO = "bb00000000000000000000000000000000000002"
 
-    # AddressBook.sqlitedb
+    # AddressBook.sqlitedb (real iOS 17+ schema)
     ab = root / AB[:2] / AB
     ab.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(ab))
-    conn.execute("CREATE TABLE ABPerson (ROWID INTEGER, First TEXT, Last TEXT, MiddleName TEXT, Organization TEXT, Department TEXT, Nickname TEXT, Note TEXT)")
+    conn.execute("CREATE TABLE ABPerson (ROWID INTEGER, First TEXT, Last TEXT, Middle TEXT, Organization TEXT, Department TEXT, Nickname TEXT, Note TEXT)")
     conn.execute("CREATE TABLE ABMultiValue (UID INTEGER, record_id INTEGER, property INTEGER, identifier INTEGER, label INTEGER, value TEXT)")
-    conn.execute("CREATE TABLE ABMultiValueLabel (UID INTEGER, label TEXT, value TEXT)")
+    conn.execute("CREATE TABLE ABMultiValueLabel (value TEXT)")
     conn.execute("INSERT INTO ABPerson VALUES (1, 'Ivan', 'Petrov', '', '', '', '', '')")
-    conn.execute("INSERT INTO ABMultiValue VALUES (10, 1, 3, 0, 100, '+7 900 123-45-67')")
-    conn.execute("INSERT INTO ABMultiValueLabel VALUES (100, 'mobile', '$!<Mobile>!$')")
+    conn.execute("INSERT INTO ABMultiValue VALUES (10, 1, 3, 0, 1, '+7 900 123-45-67')")
+    conn.execute("INSERT INTO ABMultiValueLabel VALUES ('_$!<Mobile>!$_')")
     conn.commit(); conn.close()
 
-    # Calendar.sqlitedb
+    # Calendar.sqlitedb (real iOS 17+ schema)
     cal = root / CAL[:2] / CAL
     cal.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(cal))
-    conn.execute("CREATE TABLE CalendarItem (ROWID INTEGER, summary TEXT, location TEXT, start_date REAL, end_date REAL, all_day INTEGER, calendar_id INTEGER, notes TEXT)")
-    conn.execute("INSERT INTO CalendarItem VALUES (1, 'Sync', NULL, 0, 3600, 0, NULL, NULL)")
+    conn.execute("CREATE TABLE CalendarItem (ROWID INTEGER, summary TEXT, location_id INTEGER, description TEXT, start_date REAL, end_date REAL, all_day INTEGER, calendar_id INTEGER)")
+    conn.execute("INSERT INTO CalendarItem VALUES (1, 'Sync', NULL, NULL, 0, 3600, 0, NULL)")
     conn.commit(); conn.close()
 
     # Media files (sharded layout)
