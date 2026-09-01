@@ -25,6 +25,7 @@ from core.write.vendor import find_adb, find_apk
 from core.logging_util import log
 from core.write.adb_import import (
     DEVICE_DIR,
+    grant_permissions,
     import_calendar,
     import_contacts,
     import_reminders,
@@ -150,6 +151,16 @@ def migrate_to_huawei(
         return HuaweiResult(False, message=f"APK install failed: {exc}")
     result.apk_installed = installed
     log.info(f"APK installed: {installed}")
+
+    # 2b. Grant runtime permissions (contacts + calendar) via `pm grant`.
+    # A broadcast receiver can't pop a permission dialog, so we grant them
+    # over adb — the user already authorized USB debugging.
+    try:
+        failed_perms = grant_permissions(serial=serial)
+        if failed_perms:
+            log.warn(f"permissions not granted: {failed_perms}")
+    except Exception as exc:  # noqa: BLE001 - best effort
+        log.warn(f"permission grant failed: {exc}")
 
     # 3. Push + import each APK-backed asset.
     total = sum(1 for name in _APK_ASSETS if (assets / name).exists())

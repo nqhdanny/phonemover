@@ -64,6 +64,44 @@ def install_apk(apk_path: str | Path | None = None) -> bool:
     return "Success" in proc.stdout
 
 
+# Runtime (dangerous) permissions the importer APK needs. On Android 6+ these
+# must be granted at runtime; a broadcast receiver cannot pop a permission
+# dialog, so we grant them via `adb shell pm grant` (the user has already
+# authorized USB debugging, so this is equivalent to tapping "Allow").
+REQUIRED_PERMISSIONS = [
+    "android.permission.READ_CONTACTS",
+    "android.permission.WRITE_CONTACTS",
+    "android.permission.READ_CALENDAR",
+    "android.permission.WRITE_CALENDAR",
+]
+
+
+def grant_permissions(serial: Optional[str] = None) -> list[str]:
+    """Grant the APK's runtime permissions via `adb shell pm grant`.
+
+    Returns a list of permission names that failed to grant (empty = all ok).
+    Some HUAWEI builds reject `pm grant` for certain permissions; those are
+    reported so the caller can surface a hint.
+    """
+    base = [_adb()]
+    if serial:
+        base += ["-s", serial]
+    failed: list[str] = []
+    for perm in REQUIRED_PERMISSIONS:
+        proc = run_cmd(
+            base + ["shell", "pm", "grant", APK_PACKAGE, perm],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        out = (proc.stdout or "") + (proc.stderr or "")
+        # Success prints nothing; errors print something like
+        # "Operation not allowed" / "Unknown permission".
+        if proc.returncode != 0 or "not allowed" in out.lower() or "unknown" in out.lower():
+            failed.append(perm)
+    return failed
+
+
 def push_and_import(
     local_file: str | Path,
     data_type: str,  # "contacts" | "calendar" | "reminders"
