@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core.parse.bookmarks import bookmarks_to_html, write_bookmarks
-from core.parse.notes import notes_to_text, write_notes
+from core.parse.notes import notes_to_text, read_notes, write_notes, write_notes_json
 from core.parse.reminders import reminders_to_ics, write_reminders
 
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
@@ -98,6 +98,58 @@ class TestNotes(unittest.TestCase):
             n = write_notes(db, out)
             self.assertEqual(n, 2)
             self.assertTrue(out.exists())
+
+
+    def test_read_notes_returns_structured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = make_notes(Path(tmp) / "notes.sqlite")
+            notes = read_notes(db)
+            self.assertEqual(len(notes), 2)
+            self.assertEqual(notes[0]["title"], "Grocery")
+            self.assertEqual(notes[0]["body"], "milk and eggs")
+            self.assertEqual(notes[1]["title"], "Ideas")
+            # HTML tags are stripped
+            self.assertEqual(notes[1]["body"], "build a mover")
+            # ensure plain dicts so JSON serialisation works
+            for n in notes:
+                self.assertIsInstance(n, dict)
+                self.assertIsInstance(n["title"], str)
+                self.assertIsInstance(n["body"], str)
+
+    def test_write_notes_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = make_notes(Path(tmp) / "notes.sqlite")
+            out = Path(tmp) / "notes.json"
+            n = write_notes_json(db, out)
+            self.assertEqual(n, 2)
+            self.assertTrue(out.exists())
+            import json as _json
+            data = _json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data[0]["title"], "Grocery")
+
+    def test_read_notes_handles_empty_title(self):
+        # Build a note with no title but with body — should auto-promote the
+        # first body line into the title (HUAWEI Notepad derives its title
+        # from the content).
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "notes.sqlite"
+            import sqlite3
+            conn = sqlite3.connect(str(db))
+            conn.execute(
+                "CREATE TABLE ZNOTE (Z_PK INTEGER, ZTITLE TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE ZNOTEBODY (Z_PK INTEGER, ZNOTE INTEGER, ZHTMLSTRING TEXT)"
+            )
+            conn.execute("INSERT INTO ZNOTE VALUES (1, '')")
+            conn.execute("INSERT INTO ZNOTEBODY VALUES (1, 1, 'line one\nline two')")
+            conn.commit()
+            conn.close()
+            notes = read_notes(db)
+            self.assertEqual(len(notes), 1)
+            self.assertTrue(notes[0]["title"])  # non-empty
+            self.assertIn("line one", notes[0]["body"])
+            self.assertIn("line two", notes[0]["body"])
 
     def test_missing_db_raises(self):
         with self.assertRaises(FileNotFoundError):

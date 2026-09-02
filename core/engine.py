@@ -20,7 +20,7 @@ from core.models import DATA_TYPES, DataType
 from core.parse.bookmarks import write_bookmarks
 from core.parse.calendar import write_ics
 from core.parse.contacts import write_vcards
-from core.parse.notes import write_notes
+from core.parse.notes import write_notes, write_notes_json
 from core.parse.photos import extract_photos, extract_videos
 from core.parse.reminders import write_reminders
 from core.write.mtp import copy_media_tree
@@ -147,11 +147,30 @@ class MigrationEngine:
                     break
         if db is None:
             return TypeResult(DataType.NOTES, False, 0, "NoteStore.sqlite not found in backup")
-        out = self.dest_root / "apk_assets" / "notes.txt"
-        n = write_notes(db, out)
-        ok = n > 0
-        msg = "" if ok else "no notes found in Notes store"
-        return TypeResult(DataType.NOTES, ok, n, msg, out)
+        assets_dir = self.dest_root / "apk_assets"
+        # notes.txt is the legacy human-readable dump (still useful as a
+        # portable archive / debug aid).
+        txt_out = assets_dir / "notes.txt"
+        n = write_notes(db, txt_out)
+        # notes.json is the structured companion consumed by the HUAWEI
+        # Notepad importer (core.write.notepad_import). One object per note
+        # with title/body, so each note can be pushed into the Notepad app
+        # via ACTION_SEND instead of being left as an opaque file in
+        # /sdcard/Documents.
+        json_out = assets_dir / "notes.json"
+        n_json = write_notes_json(db, json_out)
+        # Use the count from the JSON view (one record per note); both files
+        # cover the same data, but JSON is the canonical input for the
+        # importer.
+        count = n_json if n_json else n
+        ok = count > 0
+        if not ok:
+            msg = "no notes found in Notes store"
+        elif not n_json:
+            msg = "notes.txt written (json export failed)"
+        else:
+            msg = ""
+        return TypeResult(DataType.NOTES, ok, count, msg, json_out)
 
     def _migrate_bookmarks(self) -> TypeResult:
         db = self._resolve_db(DataType.BOOKMARKS)

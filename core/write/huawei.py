@@ -8,8 +8,10 @@ This is the "phase 3" of the transfer pipeline (after backup -> migrate):
   4. Fire the import broadcast for each APK-backed data type.
   5. Report per-type results.
 
-Media types (photos/videos/music) and file types (bookmarks.html, notes.txt)
-are delivered via MTP, which is handled separately (see core.write.mtp).
+Media types (photos/videos/music) are delivered via adb push into the phone's
+public media folders. Notes are imported into the HUAWEI Notepad app one by
+one via ``ACTION_SEND`` (see core.write.notepad_import). Bookmarks still use
+MTP / /sdcard/Documents because the HUAWEI Browser auto-detects them there.
 
 The adb binary and APK are bundled inside the exe (see core.write.vendor).
 """
@@ -33,6 +35,10 @@ from core.write.adb_import import (
     push_document_file,
     push_media_dir,
 )
+from core.write.notepad_import import (
+    import_notes_to_notepad,
+    load_notes_json,
+)
 
 # Which apk_assets filename maps to which adb import function.
 _APK_ASSETS = {
@@ -42,9 +48,9 @@ _APK_ASSETS = {
 }
 
 # Plain files delivered into /sdcard/Documents (no provider import exists).
-# Each maps the apk_assets filename to the human-readable result type label.
+# Only bookmarks remains: notes is imported into Notepad via ACTION_SEND
+# (see core.write.notepad_import).
 _DOCUMENT_ASSETS = {
-    "notes.txt": "notes",
     "bookmarks.html": "bookmarks",
 }
 
@@ -214,14 +220,50 @@ def migrate_to_huawei(
                 result.types.append({"type": kind, "ok": False, "count": 0, "message": str(exc)})
                 log.error(f"push media {kind} failed", exc)
 
-    # 5. Push plain documents (notes.txt, bookmarks.html) into Documents.
-    # These have no provider import; the HUAWEI Files app lists them under
-    # "Documents" for the user to open/import manually.
+    # 5. Import notes into HUAWEI Notepad via ACTION_SEND (one note at a time).
+    # Each note pops up the share dialog, we tap SAVE and the app creates a
+    # new entry in the Notepad list. We do NOT push notes.txt into /sdcard/
+    # Documents any more — that left the file sitting there with no path into
+    # the Notepad app. The .txt file in apk_assets is kept as a portable
+    # archive but is no longer delivered to the device.
+    notes_json = assets / "notes.json"
+    if notes_json.exists():
+        report(95, "importing notes into Notepad")
+        try:
+            notes = load_notes_json(notes_json)
+            total = len(notes)
+            def _notes_progress(idx: int, total: int, msg: str) -> None:
+                if total > 0:
+                    pct = 95 + int(3 * (idx - 1) / total)
+                    report(pct, f"note {idx}/{total}: {msg}")
+            nres = import_notes_to_notepad(
+                notes, serial=serial, progress_cb=_notes_progress
+            )
+            result.types.append({
+                "type": "notes",
+                "ok": nres.ok,
+                "count": nres.imported,
+                "message": nres.message,
+            })
+            log.info(f"notepad import: ok={nres.ok} imported={nres.imported} "
+                     f"failed={nres.failed} total={nres.total}")
+            if nres.errors:
+                for err in nres.errors[:5]:
+                    log.error(f"  notepad: {err}")
+        except Exception as exc:  # noqa: BLE001
+            result.types.append({"type": "notes", "ok": False, "count": 0,
+                                 "message": f"notepad import failed: {exc}"})
+            log.error("notepad import failed", exc)
+
+    # 6. Push remaining plain documents (bookmarks.html) into Documents.
+    # Bookmarks still rides MTP / /sdcard/Documents because the HUAWEI Browser
+    # auto-detects bookmark.html there. Other document types (if added) can
+    # be added to _DOCUMENT_ASSETS.
     for name, label in _DOCUMENT_ASSETS.items():
         local = assets / name
         if not local.exists():
             continue
-        report(96, f"pushing {label}")
+        report(98, f"pushing {label}")
         try:
             dres = push_document_file(local, serial=serial)
             result.types.append(
@@ -232,7 +274,7 @@ def migrate_to_huawei(
             result.types.append({"type": label, "ok": False, "count": 0, "message": str(exc)})
             log.error(f"push document {label} failed", exc)
 
-    report(95, "import complete")
+    report(99, "import complete")
     if result.types and any(not t["ok"] for t in result.types):
         result.ok = False
     result.message = f"{result.succeeded}/{result.total} types imported"

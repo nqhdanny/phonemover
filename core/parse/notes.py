@@ -174,6 +174,42 @@ def _read_new(db_path: Path) -> list[tuple[str, str]]:
     return out
 
 
+def read_notes(db_path: str | Path) -> list[dict]:
+    """Read notes as structured records for per-note import.
+
+    Unlike :func:`notes_to_text` (which flattens everything into one blob),
+    this returns one dict per note so the HUAWEI importer can push each note
+    into the Notepad app individually via ``ACTION_SEND``:
+
+        {"title": str, "body": str}
+
+    The ``title`` is the iOS note title; when iOS leaves it empty the first
+    line of the body is promoted to the title (HUAWEI Notepad derives its own
+    title from the content, but a title helps the user identify the note).
+    Notes with neither title nor body are skipped.
+    """
+    db = Path(db_path)
+    if not db.exists():
+        raise FileNotFoundError(f"Notes database not found: {db}")
+
+    notes = _read_new(db)
+    if not notes:
+        notes = _read_legacy(db)
+
+    out: list[dict] = []
+    for title, body in notes:
+        title = (title or "").strip()
+        body = (body or "").strip()
+        if not title and not body:
+            continue
+        # iOS often stores an empty title and relies on the first body line.
+        if not title:
+            first_line = body.splitlines()[0].strip() if body else ""
+            title = first_line[:40] if first_line else "Untitled"
+        out.append({"title": title, "body": body})
+    return out
+
+
 def notes_to_text(db_path: str | Path) -> str:
     """Export all notes as one plain-text blob (``# title`` + body)."""
     db = Path(db_path)
@@ -200,3 +236,21 @@ def write_notes(db_path: str | Path, out_path: str | Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8", newline="")
     return text.count("\n# ") + (1 if text.startswith("# ") else 0)
+
+
+def write_notes_json(db_path: str | Path, out_path: str | Path) -> int:
+    """Export notes as JSON (one object per note). Returns note count.
+
+    This is the machine-readable companion to :func:`write_notes`, consumed by
+    the HUAWEI Notepad importer so it can import notes one by one instead of
+    shipping a single opaque text blob.
+    """
+    import json
+
+    notes = read_notes(db_path)
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8", newline=""
+    )
+    return len(notes)
